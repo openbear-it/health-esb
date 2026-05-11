@@ -77,8 +77,8 @@ func NewSubscriber(natsURL, consumerGroup string, logger watermill.LoggerAdapter
 		wmnats.SubscriberConfig{
 			URL:              natsURL,
 			QueueGroupPrefix: consumerGroup,
-			NatsOptions:     opts,
-			Unmarshaler:     &wmnats.NATSMarshaler{},
+			NatsOptions:      opts,
+			Unmarshaler:      &wmnats.NATSMarshaler{},
 			JetStream: wmnats.JetStreamConfig{
 				AutoProvision: true,
 				DurablePrefix: consumerGroup,

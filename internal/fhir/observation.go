@@ -9,13 +9,13 @@ import (
 
 // Observation represents a simplified FHIR Observation resource.
 type Observation struct {
-	ResourceType string       `json:"resourceType"`
-	ID           string       `json:"id"`
-	Status       string       `json:"status"`
-	Code         CodeableConcept `json:"code"`
-	Subject      Reference    `json:"subject"`
-	EffectiveDateTime string  `json:"effectiveDateTime"`
-	ValueQuantity *Quantity   `json:"valueQuantity,omitempty"`
+	ResourceType      string          `json:"resourceType"`
+	ID                string          `json:"id"`
+	Status            string          `json:"status"`
+	Code              CodeableConcept `json:"code"`
+	Subject           Reference       `json:"subject"`
+	EffectiveDateTime string          `json:"effectiveDateTime"`
+	ValueQuantity     *Quantity       `json:"valueQuantity,omitempty"`
 }
 
 // CodeableConcept is a simplified FHIR CodeableConcept.
@@ -38,11 +38,11 @@ type Quantity struct {
 // FromLabResult converts a LabResultPayload into a FHIR Observation.
 func FromLabResult(correlationID string, lab events.LabResultPayload) Observation {
 	return Observation{
-		ResourceType: "Observation",
-		ID:           correlationID,
-		Status:       "final",
-		Code:         CodeableConcept{Text: lab.TestName},
-		Subject:      Reference{Reference: "Patient/" + lab.PatientID},
+		ResourceType:      "Observation",
+		ID:                correlationID,
+		Status:            "final",
+		Code:              CodeableConcept{Text: lab.TestName},
+		Subject:           Reference{Reference: "Patient/" + lab.PatientID},
 		EffectiveDateTime: time.Now().UTC().Format(time.RFC3339),
 		ValueQuantity: &Quantity{
 			Value:  lab.Value,

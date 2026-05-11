@@ -7,10 +7,10 @@ import (
 
 // Config holds common configuration for all services.
 type Config struct {
-	ServiceName string
-	Port        int
-	NATSUrl     string
-	LogLevel    string
+	ServiceName  string
+	Port         int
+	NATSUrl      string
+	LogLevel     string
 	OTLPEndpoint string
 }
 

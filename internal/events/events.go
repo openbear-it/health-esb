@@ -17,14 +17,14 @@ type Event struct {
 
 // Topic constants follow dot-notation naming convention.
 const (
-	TopicCommandPatientAdmit  = "command.patient.admit"
-	TopicPatientAdmitted      = "patient.admitted"
-	TopicPatientUpdated       = "patient.updated"
-	TopicLabResultCreated     = "lab.result.created"
-	TopicLabResultValidated   = "lab.result.validated"
-	TopicFHIRDocumentCreated  = "fhir.document.created"
-	TopicNotificationSent     = "notification.sent"
-	TopicAuditEvent           = "audit.event"
+	TopicCommandPatientAdmit = "command.patient.admit"
+	TopicPatientAdmitted     = "patient.admitted"
+	TopicPatientUpdated      = "patient.updated"
+	TopicLabResultCreated    = "lab.result.created"
+	TopicLabResultValidated  = "lab.result.validated"
+	TopicFHIRDocumentCreated = "fhir.document.created"
+	TopicNotificationSent    = "notification.sent"
+	TopicAuditEvent          = "audit.event"
 )
 
 // DLQTopic returns the dead-letter queue topic for a given topic.

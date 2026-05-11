@@ -88,5 +88,3 @@ jobs:
         # GitHub Actions cache for fast rebuilds
         cache-from: type=gha,scope=${{ matrix.service }}
         cache-to: type=gha,mode=max,scope=${{ matrix.service }}
-        build-args: |
-          BUILDPLATFORM=linux/amd64
