@@ -36,6 +36,13 @@ jobs:
         go test ./...
         for svc in gateway adt-service lab-service fhir-bridge audit-service notification-service simulator; do
           GOWORK=off go test -C apps/$svc ./...
+        done
+
+    - name: Check formatting
+      run: |
+        unformatted=$(gofmt -l .)
+        if [ -n "$unformatted" ]; then
+          echo "The following files are not formatted:"
           echo "$unformatted"
           exit 1
         fi
