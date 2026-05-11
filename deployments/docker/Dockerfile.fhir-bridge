@@ -18,7 +18,7 @@ COPY apps/fhir-bridge/ ./apps/fhir-bridge/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /bin/fhir-bridge ./apps/fhir-bridge/...
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -C apps/fhir-bridge -trimpath -o /bin/fhir-bridge .
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=builder /bin/fhir-bridge /fhir-bridge

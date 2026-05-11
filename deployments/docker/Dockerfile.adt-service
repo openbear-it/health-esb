@@ -18,7 +18,7 @@ COPY apps/adt-service/ ./apps/adt-service/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /bin/adt-service ./apps/adt-service/...
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -C apps/adt-service -trimpath -o /bin/adt-service .
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=builder /bin/adt-service /adt-service

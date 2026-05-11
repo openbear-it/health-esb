@@ -18,7 +18,7 @@ COPY apps/audit-service/ ./apps/audit-service/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /bin/audit-service ./apps/audit-service/...
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -C apps/audit-service -trimpath -o /bin/audit-service .
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=builder /bin/audit-service /audit-service
