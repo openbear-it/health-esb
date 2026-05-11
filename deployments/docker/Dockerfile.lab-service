@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1
+ARG BUILDPLATFORM
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+WORKDIR /src
+
+COPY go.work go.work.sum* ./
+COPY go.mod go.sum ./
+COPY internal/ ./internal/
+
+COPY apps/lab-service/go.mod apps/lab-service/go.sum ./apps/lab-service/
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    cd apps/lab-service && go mod download
+
+COPY apps/lab-service/ ./apps/lab-service/
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /bin/lab-service ./apps/lab-service/...
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=builder /bin/lab-service /lab-service
+EXPOSE 8080
+ENTRYPOINT ["/lab-service"]

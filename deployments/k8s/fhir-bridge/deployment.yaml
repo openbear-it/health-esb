@@ -1,0 +1,65 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fhir-bridge-config
+  namespace: health-esb
+data:
+  SERVICE_NAME: "fhir-bridge"
+  LOG_LEVEL: "info"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fhir-bridge
+  namespace: health-esb
+  labels:
+    app: fhir-bridge
+    app.kubernetes.io/part-of: health-esb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fhir-bridge
+  template:
+    metadata:
+      labels:
+        app: fhir-bridge
+    spec:
+      containers:
+        - name: fhir-bridge
+          image: ghcr.io/openbear-it/health-esb/fhir-bridge:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: fhir-bridge-config
+          env:
+            - name: NATS_URL
+              value: "nats://nats:4222"
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: fhir-bridge
+  namespace: health-esb
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: fhir-bridge
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

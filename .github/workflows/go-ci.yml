@@ -1,0 +1,48 @@
+name: Go CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: "1.25"
+        cache: true
+
+    - name: Build root module (shared packages)
+      run: go build ./...
+
+    - name: Build all services
+      run: |
+        for svc in gateway adt-service lab-service fhir-bridge audit-service notification-service simulator; do
+          echo "Building $svc..."
+          cd apps/$svc && go build ./... && cd ../..
+        done
+
+    - name: Run tests
+      run: |
+        go test ./...
+        for svc in gateway adt-service lab-service fhir-bridge audit-service notification-service simulator; do
+          cd apps/$svc && go test ./... && cd ../..
+        done
+
+    - name: Check formatting
+      run: |
+        unformatted=$(gofmt -l .)
+        if [ -n "$unformatted" ]; then
+          echo "The following files are not formatted:"
+          echo "$unformatted"
+          exit 1
+        fi

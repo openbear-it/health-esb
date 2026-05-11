@@ -1,0 +1,104 @@
+package main
+
+import (
+	"context"
+	"log/slog"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/ThreeDotsLabs/watermill"
+	"github.com/ThreeDotsLabs/watermill/message"
+	"github.com/openbear-it/health-esb/internal/config"
+	"github.com/openbear-it/health-esb/internal/events"
+	"github.com/openbear-it/health-esb/internal/messaging"
+	"github.com/openbear-it/health-esb/internal/observability"
+)
+
+const serviceName = "adt-service"
+
+func main() {
+	cfg := config.Load(serviceName)
+	logger := observability.NewLogger(cfg.ServiceName, cfg.LogLevel)
+	slog.SetDefault(logger)
+
+	wmLogger := watermill.NewSlogLogger(logger)
+	metrics := observability.NewMetrics("adt_service")
+
+	pub, err := messaging.NewPublisher(cfg.NATSUrl, wmLogger)
+	if err != nil {
+		logger.Error("create publisher", "error", err)
+		return
+	}
+	defer pub.Close()
+
+	sub, err := messaging.NewSubscriber(cfg.NATSUrl, serviceName, wmLogger)
+	if err != nil {
+		logger.Error("create subscriber", "error", err)
+		return
+	}
+
+	router, err := messaging.NewRouter(messaging.RouterConfig{ServiceName: serviceName, Logger: wmLogger})
+	if err != nil {
+		logger.Error("create router", "error", err)
+		return
+	}
+
+	messaging.AddPoisonQueue(router, pub, events.TopicPatientAdmitted)
+
+	router.AddHandler(
+		"adt-handle-admit",
+		events.TopicCommandPatientAdmit,
+		sub,
+		events.TopicPatientAdmitted,
+		pub,
+		handleAdmit(metrics, logger),
+	)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if err := router.Run(ctx); err != nil {
+		logger.Error("router stopped", "error", err)
+	}
+}
+
+func handleAdmit(m *observability.Metrics, logger *slog.Logger) message.HandlerFunc {
+	return func(msg *message.Message) ([]*message.Message, error) {
+		start := time.Now()
+		topic := events.TopicPatientAdmitted
+
+		inEvt, err := messaging.DecodeEvent(msg)
+		if err != nil {
+			m.MessagesFailedTotal.WithLabelValues(topic).Inc()
+			return nil, err
+		}
+
+		payload, err := events.Decode[events.PatientAdmitPayload](inEvt)
+		if err != nil {
+			m.MessagesFailedTotal.WithLabelValues(topic).Inc()
+			return nil, err
+		}
+
+		outEvt, err := events.New(topic, serviceName, inEvt.CorrelationID, payload)
+		if err != nil {
+			return nil, err
+		}
+
+		outMsg, err := messaging.ToMessage(outEvt)
+		if err != nil {
+			return nil, err
+		}
+
+		m.MessagesProcessedTotal.WithLabelValues(topic).Inc()
+		m.ProcessingDuration.WithLabelValues(topic).Observe(time.Since(start).Seconds())
+		logger.Info("event processed",
+			"event_type", topic,
+			"correlation_id", inEvt.CorrelationID,
+			"patient_id", payload.PatientID,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+
+		return []*message.Message{outMsg}, nil
+	}
+}

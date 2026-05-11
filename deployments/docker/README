@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Generic multi-stage Dockerfile template used by each Go service.
+# Usage: docker build -f deployments/docker/Dockerfile.service \
+#          --build-arg SERVICE=adt-service -t health-esb/adt-service .
+#
+# This file is kept as a reference. Individual Dockerfiles exist per service.

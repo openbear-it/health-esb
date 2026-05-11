@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1
+ARG BUILDPLATFORM
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+WORKDIR /src
+
+COPY go.work go.work.sum* ./
+COPY go.mod go.sum ./
+COPY internal/ ./internal/
+
+COPY apps/simulator/go.mod apps/simulator/go.sum ./apps/simulator/
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    cd apps/simulator && go mod download
+
+COPY apps/simulator/ ./apps/simulator/
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /bin/simulator ./apps/simulator/...
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=builder /bin/simulator /simulator
+EXPOSE 8080
+ENTRYPOINT ["/simulator"]

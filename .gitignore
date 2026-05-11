@@ -1,0 +1,56 @@
+# ── Go ──────────────────────────────────────────────────────────────────────
+# Compiled binaries
+apps/gateway/gateway
+apps/adt-service/adt-service
+apps/lab-service/lab-service
+apps/fhir-bridge/fhir-bridge
+apps/audit-service/audit-service
+apps/notification-service/notification-service
+apps/simulator/simulator
+
+# Test binary, build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+bin/
+
+# Go workspace generated files
+go.work.sum
+
+# Vendor directory (not used here, but common)
+vendor/
+
+# ── Node / Dashboard ────────────────────────────────────────────────────────
+apps/dashboard/node_modules/
+apps/dashboard/dist/
+apps/dashboard/.vite/
+
+# ── Editor / OS ─────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V500
+.Trashes
+Thumbs.db
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Secrets / credentials ────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# ── Kubernetes / Helm local overrides ────────────────────────────────────────
+kubeconfig
+*.kubeconfig

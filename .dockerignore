@@ -1,0 +1,45 @@
+# ── Git ──────────────────────────────────────────────────────────────────────
+.git
+.gitignore
+
+# ── GitHub Actions / docs ────────────────────────────────────────────────────
+.github
+docs
+README.md
+
+# ── Compiled Go binaries (built locally) ────────────────────────────────────
+apps/gateway/gateway
+apps/adt-service/adt-service
+apps/lab-service/lab-service
+apps/fhir-bridge/fhir-bridge
+apps/audit-service/audit-service
+apps/notification-service/notification-service
+apps/simulator/simulator
+*.exe
+*.test
+*.out
+
+# ── Node / Dashboard ────────────────────────────────────────────────────────
+apps/dashboard/node_modules
+apps/dashboard/dist
+apps/dashboard/.vite
+
+# ── Kubernetes / deployment manifests ────────────────────────────────────────
+deployments
+
+# ── Editor / OS ──────────────────────────────────────────────────────────────
+.DS_Store
+.idea
+.vscode
+*.swp
+*~
+
+# ── Secrets ──────────────────────────────────────────────────────────────────
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+# ── Go test cache ────────────────────────────────────────────────────────────
+vendor

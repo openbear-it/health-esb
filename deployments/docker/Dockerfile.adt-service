@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1
+ARG BUILDPLATFORM
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+WORKDIR /src
+
+COPY go.work go.work.sum* ./
+COPY go.mod go.sum ./
+COPY internal/ ./internal/
+
+COPY apps/adt-service/go.mod apps/adt-service/go.sum ./apps/adt-service/
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    cd apps/adt-service && go mod download
+
+COPY apps/adt-service/ ./apps/adt-service/
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /bin/adt-service ./apps/adt-service/...
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=builder /bin/adt-service /adt-service
+EXPOSE 8080
+ENTRYPOINT ["/adt-service"]

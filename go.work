@@ -1,0 +1,12 @@
+go 1.25.0
+
+use (
+	.
+	./apps/adt-service
+	./apps/audit-service
+	./apps/fhir-bridge
+	./apps/gateway
+	./apps/lab-service
+	./apps/notification-service
+	./apps/simulator
+)
