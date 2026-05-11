@@ -1,10 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG BUILDPLATFORM
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+FROM golang:1.25-alpine AS builder
 ENV GOWORK=off
 WORKDIR /src
 
@@ -20,7 +15,7 @@ COPY apps/simulator/ ./apps/simulator/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -C apps/simulator -trimpath -o /bin/simulator .
+    CGO_ENABLED=0 GOOS=linux go build -C apps/simulator -trimpath -o /bin/simulator .
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=builder /bin/simulator /simulator

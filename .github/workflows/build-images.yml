@@ -85,6 +85,5 @@ jobs:
         push: ${{ github.event_name != 'pull_request' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
-        # GitHub Actions cache for fast rebuilds
-        cache-from: type=gha,scope=v2-${{ matrix.service }}
-        cache-to: type=gha,mode=max,scope=v2-${{ matrix.service }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
