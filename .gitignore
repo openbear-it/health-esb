@@ -18,9 +18,6 @@ apps/simulator/simulator
 *.out
 bin/
 
-# Go workspace generated files
-go.work.sum
-
 # Vendor directory (not used here, but common)
 vendor/
 

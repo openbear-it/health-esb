@@ -27,22 +27,22 @@ spec:
         app: adt-service
     spec:
       containers:
-        - name: adt-service
-          image: ghcr.io/openbear-it/health-esb/adt-service:latest
-          imagePullPolicy: IfNotPresent
-          envFrom:
-            - configMapRef:
-                name: adt-service-config
-          env:
-            - name: NATS_URL
-              value: "nats://nats:4222"
-          resources:
-            requests:
-              memory: "32Mi"
-              cpu: "50m"
-            limits:
-              memory: "128Mi"
-              cpu: "200m"
+      - name: adt-service
+        image: ghcr.io/openbear-it/health-esb/adt-service:latest
+        imagePullPolicy: Always
+        envFrom:
+        - configMapRef:
+            name: adt-service-config
+        env:
+        - name: NATS_URL
+          value: "nats://nats:4222"
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -57,9 +57,9 @@ spec:
   minReplicas: 1
   maxReplicas: 10
   metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 70
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

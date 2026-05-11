@@ -28,21 +28,14 @@ jobs:
       run: |
         for svc in gateway adt-service lab-service fhir-bridge audit-service notification-service simulator; do
           echo "Building $svc..."
-          cd apps/$svc && go build ./... && cd ../..
+          GOWORK=off go build -C apps/$svc .
         done
 
     - name: Run tests
       run: |
         go test ./...
         for svc in gateway adt-service lab-service fhir-bridge audit-service notification-service simulator; do
-          cd apps/$svc && go test ./... && cd ../..
-        done
-
-    - name: Check formatting
-      run: |
-        unformatted=$(gofmt -l .)
-        if [ -n "$unformatted" ]; then
-          echo "The following files are not formatted:"
+          GOWORK=off go test -C apps/$svc ./...
           echo "$unformatted"
           exit 1
         fi

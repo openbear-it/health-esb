@@ -27,22 +27,22 @@ spec:
         app: simulator
     spec:
       containers:
-        - name: simulator
-          image: ghcr.io/openbear-it/health-esb/simulator:latest
-          imagePullPolicy: IfNotPresent
-          envFrom:
-            - configMapRef:
-                name: simulator-config
-          env:
-            - name: NATS_URL
-              value: "nats://nats:4222"
-          resources:
-            requests:
-              memory: "32Mi"
-              cpu: "50m"
-            limits:
-              memory: "128Mi"
-              cpu: "200m"
+      - name: simulator
+        image: ghcr.io/openbear-it/health-esb/simulator:latest
+        imagePullPolicy: Always
+        envFrom:
+        - configMapRef:
+            name: simulator-config
+        env:
+        - name: NATS_URL
+          value: "nats://nats:4222"
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -57,9 +57,9 @@ spec:
   minReplicas: 1
   maxReplicas: 10
   metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 70
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

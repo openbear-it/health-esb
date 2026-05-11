@@ -34,7 +34,7 @@ spec:
       containers:
       - name: gateway
         image: ghcr.io/openbear-it/health-esb/gateway:latest
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         ports:
         - containerPort: 8080
         envFrom:
