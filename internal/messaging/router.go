@@ -94,7 +94,7 @@ func NewSubscriber(natsURL, consumerGroup string, logger watermill.LoggerAdapter
 
 // AddPoisonQueue adds a dead-letter queue handler to the router for a given topic.
 func AddPoisonQueue(router *message.Router, pub message.Publisher, topic string) {
-	pq, err := middleware.PoisonQueue(pub, topic+".dlq")
+	pq, err := middleware.PoisonQueue(pub, topic+"-dlq")
 	if err != nil {
 		return
 	}

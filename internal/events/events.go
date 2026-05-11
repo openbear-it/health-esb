@@ -15,19 +15,21 @@ type Event struct {
 	Payload       json.RawMessage `json:"payload"`
 }
 
-// Topic constants follow dot-notation naming convention.
+// Topic constants use hyphens as separators.
+// NATS JetStream stream and durable consumer names do not allow dots,
+// so hyphens are used throughout (valid both as NATS subjects and stream names).
 const (
-	TopicCommandPatientAdmit = "command.patient.admit"
-	TopicPatientAdmitted     = "patient.admitted"
-	TopicPatientUpdated      = "patient.updated"
-	TopicLabResultCreated    = "lab.result.created"
-	TopicLabResultValidated  = "lab.result.validated"
-	TopicFHIRDocumentCreated = "fhir.document.created"
-	TopicNotificationSent    = "notification.sent"
-	TopicAuditEvent          = "audit.event"
+	TopicCommandPatientAdmit = "command-patient-admit"
+	TopicPatientAdmitted     = "patient-admitted"
+	TopicPatientUpdated      = "patient-updated"
+	TopicLabResultCreated    = "lab-result-created"
+	TopicLabResultValidated  = "lab-result-validated"
+	TopicFHIRDocumentCreated = "fhir-document-created"
+	TopicNotificationSent    = "notification-sent"
+	TopicAuditEvent          = "audit-event"
 )
 
 // DLQTopic returns the dead-letter queue topic for a given topic.
 func DLQTopic(topic string) string {
-	return topic + ".dlq"
+	return topic + "-dlq"
 }
