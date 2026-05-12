@@ -82,7 +82,7 @@ func handleSSE(broker *sseBroker) gin.HandlerFunc {
 		c.Stream(func(w io.Writer) bool {
 			select {
 			case msg := <-ch:
-				c.SSEvent("event", msg)
+				fmt.Fprintf(w, "event: event\ndata: %s\n\n", msg)
 				return true
 			case <-keepalive.C:
 				// SSE comment — keeps the connection alive through proxies and load balancers
