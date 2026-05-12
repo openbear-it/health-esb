@@ -12,39 +12,118 @@ env:
   IMAGE_PREFIX: ghcr.io/openbear-it/health-esb
 
 jobs:
+  detect:
+    name: Detect changed services
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      any_changed: ${{ steps.set-matrix.outputs.any_changed }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - uses: dorny/paths-filter@v3
+      id: filter
+      if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      with:
+        filters: |
+          shared:
+            - 'internal/**'
+            - 'go.mod'
+            - 'go.work'
+          gateway:
+            - 'apps/gateway/**'
+            - 'deployments/docker/Dockerfile.gateway'
+          adt-service:
+            - 'apps/adt-service/**'
+            - 'deployments/docker/Dockerfile.adt-service'
+          lab-service:
+            - 'apps/lab-service/**'
+            - 'deployments/docker/Dockerfile.lab-service'
+          fhir-bridge:
+            - 'apps/fhir-bridge/**'
+            - 'deployments/docker/Dockerfile.fhir-bridge'
+          audit-service:
+            - 'apps/audit-service/**'
+            - 'deployments/docker/Dockerfile.audit-service'
+          notification-service:
+            - 'apps/notification-service/**'
+            - 'deployments/docker/Dockerfile.notification-service'
+          simulator:
+            - 'apps/simulator/**'
+            - 'deployments/docker/Dockerfile.simulator'
+          dashboard:
+            - 'apps/dashboard/**'
+            - 'deployments/docker/Dockerfile.dashboard'
+            - 'deployments/docker/nginx.conf'
+
+    - id: set-matrix
+      env:
+        IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
+        CHANGES: ${{ steps.filter.outputs.changes }}
+      run: |
+        declare -A dockerfiles=(
+          [gateway]="deployments/docker/Dockerfile.gateway"
+          [adt-service]="deployments/docker/Dockerfile.adt-service"
+          [lab-service]="deployments/docker/Dockerfile.lab-service"
+          [fhir-bridge]="deployments/docker/Dockerfile.fhir-bridge"
+          [audit-service]="deployments/docker/Dockerfile.audit-service"
+          [notification-service]="deployments/docker/Dockerfile.notification-service"
+          [simulator]="deployments/docker/Dockerfile.simulator"
+          [dashboard]="deployments/docker/Dockerfile.dashboard"
+        )
+        go_services=(gateway adt-service lab-service fhir-bridge audit-service notification-service simulator)
+        all_services=(gateway adt-service lab-service fhir-bridge audit-service notification-service simulator dashboard)
+        includes=()
+        CHANGES="${CHANGES:-[]}"
+
+        if [[ "$IS_TAG" == "true" ]]; then
+          # Tag release: always build everything
+          for svc in "${all_services[@]}"; do
+            includes+=("\"service\":\"$svc\",\"dockerfile\":\"${dockerfiles[$svc]}\"")
+          done
+        else
+          shared=$(echo "$CHANGES" | jq 'contains(["shared"])')
+          # Go services: rebuild if service-specific files or shared packages changed
+          for svc in "${go_services[@]}"; do
+            svc_changed=$(echo "$CHANGES" | jq --arg s "$svc" 'contains([$s])')
+            if [[ "$svc_changed" == "true" || "$shared" == "true" ]]; then
+              includes+=("\"service\":\"$svc\",\"dockerfile\":\"${dockerfiles[$svc]}\"")
+            fi
+          done
+          # Dashboard depends only on its own files
+          dash=$(echo "$CHANGES" | jq 'contains(["dashboard"])')
+          if [[ "$dash" == "true" ]]; then
+            includes+=("\"service\":\"dashboard\",\"dockerfile\":\"${dockerfiles[dashboard]}\"")
+          fi
+        fi
+
+        if [ ${#includes[@]} -eq 0 ]; then
+          echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+          echo "any_changed=false" >> $GITHUB_OUTPUT
+        else
+          items=$(printf '{%s},' "${includes[@]}")
+          echo "matrix={\"include\":[${items%,}]}" >> $GITHUB_OUTPUT
+          echo "any_changed=true" >> $GITHUB_OUTPUT
+        fi
+
   build:
     name: ${{ matrix.service }}
+    needs: detect
+    if: needs.detect.outputs.any_changed == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-
     strategy:
       fail-fast: false
-      matrix:
-        include:
-        - service: gateway
-          dockerfile: deployments/docker/Dockerfile.gateway
-        - service: adt-service
-          dockerfile: deployments/docker/Dockerfile.adt-service
-        - service: lab-service
-          dockerfile: deployments/docker/Dockerfile.lab-service
-        - service: fhir-bridge
-          dockerfile: deployments/docker/Dockerfile.fhir-bridge
-        - service: audit-service
-          dockerfile: deployments/docker/Dockerfile.audit-service
-        - service: notification-service
-          dockerfile: deployments/docker/Dockerfile.notification-service
-        - service: simulator
-          dockerfile: deployments/docker/Dockerfile.simulator
-        - service: dashboard
-          dockerfile: deployments/docker/Dockerfile.dashboard
+      matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
 
     steps:
     - name: Checkout
       uses: actions/checkout@v4
 
-    # Required for cross-compilation of linux/arm64 on amd64 runners
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
 
@@ -59,10 +138,6 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    # Generates tags:
-    #   push to main  → :main  + :sha-<short>
-    #   push tag v1.2.3 → :1.2.3 + :1.2 + :latest
-    #   pull_request  → :pr-<n>  (not pushed)
     - name: Extract metadata
       id: meta
       uses: docker/metadata-action@v5

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -94,7 +95,7 @@ func handleSSE(broker *sseBroker) gin.HandlerFunc {
 	}
 }
 
-func forwardToSSE(sub message.Subscriber, broker *sseBroker, logger *slog.Logger) {
+func forwardToSSE(ctx context.Context, sub message.Subscriber, broker *sseBroker, logger *slog.Logger) {
 	topics := []string{
 		events.TopicPatientAdmitted,
 		events.TopicLabResultCreated,
@@ -103,7 +104,7 @@ func forwardToSSE(sub message.Subscriber, broker *sseBroker, logger *slog.Logger
 	}
 
 	for _, topic := range topics {
-		msgs, err := sub.Subscribe(nil, topic)
+		msgs, err := sub.Subscribe(ctx, topic)
 		if err != nil {
 			logger.Warn("subscribe failed", "topic", topic, "error", err)
 			continue

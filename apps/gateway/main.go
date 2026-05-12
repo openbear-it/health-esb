@@ -46,7 +46,7 @@ func main() {
 	if err != nil {
 		logger.Warn("failed to create SSE subscriber", "error", err)
 	} else {
-		go forwardToSSE(sub, sseBroker, logger)
+		go forwardToSSE(context.Background(), sub, sseBroker, logger)
 	}
 
 	r := gin.New()

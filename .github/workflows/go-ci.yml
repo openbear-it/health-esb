@@ -7,42 +7,116 @@ on:
     branches: [ main ]
 
 jobs:
-  build-and-test:
-    name: Build & Test
+  detect:
+    name: Detect changed services
     runs-on: ubuntu-latest
-
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      any_changed: ${{ steps.set-matrix.outputs.any_changed }}
+      shared_changed: ${{ steps.filter.outputs.shared }}
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
+    - uses: dorny/paths-filter@v3
+      id: filter
+      with:
+        filters: |
+          shared:
+            - 'internal/**'
+            - 'go.mod'
+            - 'go.work'
+          gateway:
+            - 'apps/gateway/**'
+          adt-service:
+            - 'apps/adt-service/**'
+          lab-service:
+            - 'apps/lab-service/**'
+          fhir-bridge:
+            - 'apps/fhir-bridge/**'
+          audit-service:
+            - 'apps/audit-service/**'
+          notification-service:
+            - 'apps/notification-service/**'
+          simulator:
+            - 'apps/simulator/**'
+
+    - id: set-matrix
+      env:
+        CHANGES: ${{ steps.filter.outputs.changes }}
+      run: |
+        services=(gateway adt-service lab-service fhir-bridge audit-service notification-service simulator)
+        includes=()
+        CHANGES="${CHANGES:-[]}"
+        shared=$(echo "$CHANGES" | jq 'contains(["shared"])')
+
+        for svc in "${services[@]}"; do
+          svc_changed=$(echo "$CHANGES" | jq --arg s "$svc" 'contains([$s])')
+          if [[ "$svc_changed" == "true" || "$shared" == "true" ]]; then
+            includes+=("\"service\":\"$svc\"")
+          fi
+        done
+
+        if [ ${#includes[@]} -eq 0 ]; then
+          echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+          echo "any_changed=false" >> $GITHUB_OUTPUT
+        else
+          items=$(printf '{%s},' "${includes[@]}")
+          echo "matrix={\"include\":[${items%,}]}" >> $GITHUB_OUTPUT
+          echo "any_changed=true" >> $GITHUB_OUTPUT
+        fi
+
+  # Shared packages (internal/) — runs only if they changed
+  shared:
+    name: Root module
+    needs: detect
+    if: needs.detect.outputs.shared_changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
       with:
         go-version: "1.25"
         cache: true
-
-    - name: Build root module (shared packages)
+    - name: Build
       run: go build ./...
-
-    - name: Build all services
-      run: |
-        for svc in gateway adt-service lab-service fhir-bridge audit-service notification-service simulator; do
-          echo "Building $svc..."
-          GOWORK=off go build -C apps/$svc .
-        done
-
-    - name: Run tests
-      run: |
-        go test ./...
-        for svc in gateway adt-service lab-service fhir-bridge audit-service notification-service simulator; do
-          GOWORK=off go test -C apps/$svc ./...
-        done
-
+    - name: Test
+      run: go test ./...
     - name: Check formatting
       run: |
         unformatted=$(gofmt -l .)
         if [ -n "$unformatted" ]; then
-          echo "The following files are not formatted:"
+          echo "Unformatted files:"
+          echo "$unformatted"
+          exit 1
+        fi
+
+  # Individual services — only those whose files changed
+  services:
+    name: ${{ matrix.service }}
+    needs: detect
+    if: needs.detect.outputs.any_changed == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.25"
+        cache: true
+    - name: Build
+      run: GOWORK=off go build -C apps/${{ matrix.service }} .
+    - name: Test
+      run: GOWORK=off go test -C apps/${{ matrix.service }} ./...
+    - name: Check formatting
+      working-directory: apps/${{ matrix.service }}
+      run: |
+        unformatted=$(gofmt -l .)
+        if [ -n "$unformatted" ]; then
+          echo "Unformatted files in ${{ matrix.service }}:"
           echo "$unformatted"
           exit 1
         fi
