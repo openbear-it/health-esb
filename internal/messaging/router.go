@@ -1,16 +1,14 @@
 package messaging
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/ThreeDotsLabs/watermill"
-	wmnats "github.com/ThreeDotsLabs/watermill-nats/v2/pkg/nats"
+	wmamqp "github.com/ThreeDotsLabs/watermill-amqp/v2/pkg/amqp"
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/ThreeDotsLabs/watermill/message/router/middleware"
-	nc "github.com/nats-io/nats.go"
 )
 
 // RouterConfig holds configuration for the Watermill router.
@@ -50,44 +48,30 @@ func RetryMiddleware(logger watermill.LoggerAdapter) message.HandlerMiddleware {
 	}.Middleware
 }
 
-// NewPublisher creates a new NATS JetStream publisher.
-func NewPublisher(natsURL string, logger watermill.LoggerAdapter) (message.Publisher, error) {
-	opts := []nc.Option{nc.RetryOnFailedConnect(true), nc.MaxReconnects(-1)}
-	pub, err := wmnats.NewPublisher(
-		wmnats.PublisherConfig{
-			URL:         natsURL,
-			NatsOptions: opts,
-			Marshaler:   &wmnats.NATSMarshaler{},
-			JetStream: wmnats.JetStreamConfig{
-				AutoProvision: true,
-			},
-		},
-		logger,
-	)
+// NewPublisher creates a new RabbitMQ publisher.
+// Each topic is mapped to a fanout exchange of the same name, so every
+// subscriber queue bound to that exchange receives all messages.
+func NewPublisher(amqpURL string, logger watermill.LoggerAdapter) (message.Publisher, error) {
+	cfg := wmamqp.NewDurablePubSubConfig(amqpURL, nil)
+	pub, err := wmamqp.NewPublisher(cfg, logger)
 	if err != nil {
-		return nil, fmt.Errorf("create nats publisher: %w", err)
+		return nil, fmt.Errorf("create amqp publisher: %w", err)
 	}
 	return pub, nil
 }
 
-// NewSubscriber creates a new NATS JetStream subscriber.
-func NewSubscriber(natsURL, consumerGroup string, logger watermill.LoggerAdapter) (message.Subscriber, error) {
-	opts := []nc.Option{nc.RetryOnFailedConnect(true), nc.MaxReconnects(-1)}
-	sub, err := wmnats.NewSubscriber(
-		wmnats.SubscriberConfig{
-			URL:              natsURL,
-			QueueGroupPrefix: consumerGroup,
-			NatsOptions:      opts,
-			Unmarshaler:      &wmnats.NATSMarshaler{},
-			JetStream: wmnats.JetStreamConfig{
-				AutoProvision: true,
-				DurablePrefix: consumerGroup,
-			},
-		},
-		logger,
+// NewSubscriber creates a new RabbitMQ subscriber.
+// consumerGroup is used to derive a unique durable queue name per service,
+// ensuring competing-consumer semantics within a group and independent
+// fan-out across groups.
+func NewSubscriber(amqpURL, consumerGroup string, logger watermill.LoggerAdapter) (message.Subscriber, error) {
+	cfg := wmamqp.NewDurablePubSubConfig(
+		amqpURL,
+		wmamqp.GenerateQueueNameTopicNameWithSuffix(consumerGroup),
 	)
+	sub, err := wmamqp.NewSubscriber(cfg, logger)
 	if err != nil {
-		return nil, fmt.Errorf("create nats subscriber: %w", err)
+		return nil, fmt.Errorf("create amqp subscriber: %w", err)
 	}
 	return sub, nil
 }
@@ -99,9 +83,4 @@ func AddPoisonQueue(router *message.Router, pub message.Publisher, topic string)
 		return
 	}
 	router.AddMiddleware(pq)
-}
-
-// RunRouter starts the router and blocks until ctx is cancelled.
-func RunRouter(ctx context.Context, router *message.Router) error {
-	return router.Run(ctx)
 }

@@ -21,8 +21,10 @@ const SERVICE_CHAIN = [
 function useSSE(url) {
   const [events, setEvents] = useState([])
   const [connected, setConnected] = useState(false)
-  // Arrival ring-buffer: [{t: ms, type: string}] — mutated directly, no re-render
-  const arrivalsRef = useRef([])
+  // Counts events received since last throughput tick, keyed by type.
+  // Mutated directly so the interval always sees the latest value without
+  // depending on React state (avoids stale-closure issues).
+  const tickCountsRef = useRef({})
 
   useEffect(() => {
     const es = new EventSource(url)
@@ -31,14 +33,14 @@ function useSSE(url) {
     es.addEventListener('event', (e) => {
       try {
         const evt = JSON.parse(e.data)
-        arrivalsRef.current = [{ t: Date.now(), type: evt.type }, ...arrivalsRef.current].slice(0, 1000)
+        tickCountsRef.current[evt.type] = (tickCountsRef.current[evt.type] || 0) + 1
         setEvents(prev => [evt, ...prev].slice(0, 200))
       } catch (_) {}
     })
     return () => es.close()
   }, [url])
 
-  return { events, connected, arrivalsRef }
+  return { events, connected, tickCountsRef }
 }
 
 function Badge({ color, children }) {
@@ -131,24 +133,24 @@ function MessageInspector({ event, onClose }) {
 }
 
 export default function App() {
-  const { events, connected, arrivalsRef } = useSSE('/events/stream')
+  const { events, connected, tickCountsRef } = useSSE('/events/stream')
   const [throughputData, setThroughputData] = useState([])
   const [selectedEvent, setSelectedEvent] = useState(null)
 
-  // Throughput: read from arrivalsRef on a fixed 1s tick — no events dependency
+  // Throughput: every second, snapshot & reset the counter ref.
+  // No dependency on `events` → interval is created once, never recreated.
   useEffect(() => {
     const id = setInterval(() => {
-      const cutoff = Date.now() - 1000
-      const recent = arrivalsRef.current.filter(a => a.t > cutoff)
-      const counts = {}
-      recent.forEach(a => { counts[a.type] = (counts[a.type] || 0) + 1 })
+      const snapshot = { ...tickCountsRef.current }
+      tickCountsRef.current = {}
+      const total = Object.values(snapshot).reduce((s, v) => s + v, 0)
       setThroughputData(prev => [
         ...prev,
-        { time: new Date().toLocaleTimeString(), total: recent.length, ...counts },
+        { time: new Date().toLocaleTimeString(), total, ...snapshot },
       ].slice(-30))
     }, 1000)
     return () => clearInterval(id)
-  }, [arrivalsRef])
+  }, [tickCountsRef])
 
   const topicCounts = events.reduce((acc, e) => {
     acc[e.type] = (acc[e.type] || 0) + 1

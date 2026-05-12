@@ -9,7 +9,7 @@ import (
 type Config struct {
 	ServiceName  string
 	Port         int
-	NATSUrl      string
+	AMQPUrl      string
 	LogLevel     string
 	OTLPEndpoint string
 }
@@ -19,7 +19,7 @@ func Load(serviceName string) Config {
 	return Config{
 		ServiceName:  getEnv("SERVICE_NAME", serviceName),
 		Port:         getEnvInt("PORT", 8080),
-		NATSUrl:      getEnv("NATS_URL", "nats://localhost:4222"),
+		AMQPUrl:      getEnv("AMQP_URL", "amqp://guest:guest@localhost:5672/"),
 		LogLevel:     getEnv("LOG_LEVEL", "info"),
 		OTLPEndpoint: getEnv("OTLP_ENDPOINT", "http://localhost:4318"),
 	}

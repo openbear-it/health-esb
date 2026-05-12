@@ -25,14 +25,14 @@ func main() {
 	wmLogger := watermill.NewSlogLogger(logger)
 	metrics := observability.NewMetrics("adt_service")
 
-	pub, err := messaging.NewPublisher(cfg.NATSUrl, wmLogger)
+	pub, err := messaging.NewPublisher(cfg.AMQPUrl, wmLogger)
 	if err != nil {
 		logger.Error("create publisher", "error", err)
 		return
 	}
 	defer pub.Close()
 
-	sub, err := messaging.NewSubscriber(cfg.NATSUrl, serviceName, wmLogger)
+	sub, err := messaging.NewSubscriber(cfg.AMQPUrl, serviceName, wmLogger)
 	if err != nil {
 		logger.Error("create subscriber", "error", err)
 		return

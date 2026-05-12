@@ -34,8 +34,11 @@ spec:
         - configMapRef:
             name: adt-service-config
         env:
-        - name: NATS_URL
-          value: "nats://nats:4222"
+        - name: AMQP_URL
+          valueFrom:
+            secretKeyRef:
+              name: rabbitmq-secret
+              key: url
         resources:
           requests:
             memory: "32Mi"

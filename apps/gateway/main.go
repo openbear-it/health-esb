@@ -28,7 +28,7 @@ func main() {
 
 	wmLogger := watermill.NewSlogLogger(logger)
 
-	pub, err := messaging.NewPublisher(cfg.NATSUrl, wmLogger)
+	pub, err := messaging.NewPublisher(cfg.AMQPUrl, wmLogger)
 	if err != nil {
 		logger.Error("failed to create publisher", "error", err)
 		return
@@ -42,7 +42,7 @@ func main() {
 	go sseBroker.run()
 
 	// Subscribe to all events to forward them to SSE clients
-	sub, err := messaging.NewSubscriber(cfg.NATSUrl, "gateway-sse", wmLogger)
+	sub, err := messaging.NewSubscriber(cfg.AMQPUrl, "gateway-sse", wmLogger)
 	if err != nil {
 		logger.Warn("failed to create SSE subscriber", "error", err)
 	} else {

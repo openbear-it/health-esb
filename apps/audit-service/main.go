@@ -46,7 +46,7 @@ func main() {
 	wmLogger := watermill.NewSlogLogger(logger)
 	metrics := observability.NewMetrics("audit_service")
 
-	pub, err := messaging.NewPublisher(cfg.NATSUrl, wmLogger)
+	pub, err := messaging.NewPublisher(cfg.AMQPUrl, wmLogger)
 	if err != nil {
 		logger.Error("create publisher", "error", err)
 		return
@@ -66,7 +66,7 @@ func main() {
 
 	var wg sync.WaitGroup
 	for _, topic := range allTopics {
-		sub, err := messaging.NewSubscriber(cfg.NATSUrl, serviceName+"-"+topic, wmLogger)
+		sub, err := messaging.NewSubscriber(cfg.AMQPUrl, serviceName+"-"+topic, wmLogger)
 		if err != nil {
 			logger.Warn("create subscriber", "topic", topic, "error", err)
 			continue

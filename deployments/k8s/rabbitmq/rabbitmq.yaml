@@ -79,6 +79,7 @@ spec:
 ---
 # Secret — change username/password before deploying to production.
 # Base64: guest → Z3Vlc3Q=
+# amqp://guest:guest@rabbitmq:5672/ → YW1xcDovL2d1ZXN0Omd1ZXN0QHJhYmJpdG1xOjU2NzIv
 apiVersion: v1
 kind: Secret
 metadata:
@@ -88,3 +89,4 @@ type: Opaque
 data:
   username: Z3Vlc3Q=
   password: Z3Vlc3Q=
+  url: YW1xcDovL2d1ZXN0Omd1ZXN0QHJhYmJpdG1xOjU2NzIv

@@ -33,7 +33,7 @@ func main() {
 
 	wmLogger := watermill.NewSlogLogger(logger)
 
-	pub, err := messaging.NewPublisher(cfg.NATSUrl, wmLogger)
+	pub, err := messaging.NewPublisher(cfg.AMQPUrl, wmLogger)
 	if err != nil {
 		logger.Error("create publisher", "error", err)
 		return
