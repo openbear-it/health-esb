@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend } from 'recharts'
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts'
 
+// Topic names match backend constants (hyphens, not dots)
 const TOPIC_COLORS = {
-  'patient.admitted': '#38bdf8',
-  'lab.result.created': '#34d399',
-  'fhir.document.created': '#a78bfa',
-  'notification.sent': '#fb923c',
+  'patient-admitted': '#38bdf8',
+  'lab-result-created': '#34d399',
+  'fhir-document-created': '#a78bfa',
+  'notification-sent': '#fb923c',
 }
 
 const SERVICE_CHAIN = [
@@ -20,25 +21,24 @@ const SERVICE_CHAIN = [
 function useSSE(url) {
   const [events, setEvents] = useState([])
   const [connected, setConnected] = useState(false)
-  const esRef = useRef(null)
+  // Arrival ring-buffer: [{t: ms, type: string}] — mutated directly, no re-render
+  const arrivalsRef = useRef([])
 
   useEffect(() => {
     const es = new EventSource(url)
-    esRef.current = es
-
     es.onopen = () => setConnected(true)
     es.onerror = () => setConnected(false)
     es.addEventListener('event', (e) => {
       try {
         const evt = JSON.parse(e.data)
+        arrivalsRef.current = [{ t: Date.now(), type: evt.type }, ...arrivalsRef.current].slice(0, 1000)
         setEvents(prev => [evt, ...prev].slice(0, 200))
       } catch (_) {}
     })
-
     return () => es.close()
   }, [url])
 
-  return { events, connected }
+  return { events, connected, arrivalsRef }
 }
 
 function Badge({ color, children }) {
@@ -91,26 +91,64 @@ function ServiceNode({ service, count }) {
   )
 }
 
-export default function App() {
-  const { events, connected } = useSSE('/events/stream')
-  const [throughputData, setThroughputData] = useState([])
-  const tickRef = useRef(0)
+function MessageInspector({ event, onClose }) {
+  if (!event) return null
+  let payload = null
+  try { payload = JSON.parse(event.payload ?? 'null') } catch (_) { payload = event.payload }
+  const color = TOPIC_COLORS[event.type] || '#94a3b8'
+  return (
+    <div style={{ background: '#1e293b', borderRadius: 8, padding: 16, marginBottom: 24, border: `1px solid ${color}55` }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <div style={{ fontSize: 12, color: '#64748b', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1 }}>
+          Message Inspector
+        </div>
+        <Badge color={color}>{event.type}</Badge>
+        <span style={{ color: '#64748b', fontSize: 11, marginLeft: 4 }}>{event.source}</span>
+        <button onClick={onClose} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 16 }}>✕</button>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12, fontSize: 12 }}>
+        <div><span style={{ color: '#475569' }}>ID </span><span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>{event.id}</span></div>
+        <div><span style={{ color: '#475569' }}>Correlation </span><span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>{event.correlation_id}</span></div>
+        <div><span style={{ color: '#475569' }}>Timestamp </span><span style={{ color: '#94a3b8' }}>{new Date(event.timestamp).toISOString()}</span></div>
+      </div>
+      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>Payload</div>
+      <pre style={{
+        background: '#0f172a',
+        borderRadius: 6,
+        padding: 12,
+        fontSize: 12,
+        color: '#e2e8f0',
+        overflowX: 'auto',
+        margin: 0,
+        fontFamily: 'monospace',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-all',
+      }}>
+        {JSON.stringify(payload, null, 2)}
+      </pre>
+    </div>
+  )
+}
 
-  // Build per-second throughput
+export default function App() {
+  const { events, connected, arrivalsRef } = useSSE('/events/stream')
+  const [throughputData, setThroughputData] = useState([])
+  const [selectedEvent, setSelectedEvent] = useState(null)
+
+  // Throughput: read from arrivalsRef on a fixed 1s tick — no events dependency
   useEffect(() => {
     const id = setInterval(() => {
-      tickRef.current += 1
-      const now = new Date().toLocaleTimeString()
-      const recent = events.filter(e => {
-        const age = (Date.now() - new Date(e.timestamp).getTime()) / 1000
-        return age < 1
-      })
+      const cutoff = Date.now() - 1000
+      const recent = arrivalsRef.current.filter(a => a.t > cutoff)
       const counts = {}
-      recent.forEach(e => { counts[e.type] = (counts[e.type] || 0) + 1 })
-      setThroughputData(prev => [...prev, { time: now, ...counts }].slice(-30))
+      recent.forEach(a => { counts[a.type] = (counts[a.type] || 0) + 1 })
+      setThroughputData(prev => [
+        ...prev,
+        { time: new Date().toLocaleTimeString(), total: recent.length, ...counts },
+      ].slice(-30))
     }, 1000)
     return () => clearInterval(id)
-  }, [events])
+  }, [arrivalsRef])
 
   const topicCounts = events.reduce((acc, e) => {
     acc[e.type] = (acc[e.type] || 0) + 1
@@ -122,7 +160,7 @@ export default function App() {
     return acc
   }, {})
 
-  const dlqEvents = events.filter(e => e.type && e.type.endsWith('.dlq'))
+  const dlqEvents = events.filter(e => e.type && e.type.endsWith('-dlq'))
 
   return (
     <div style={{ minHeight: '100vh', padding: 24, background: '#0f172a' }}>
@@ -140,10 +178,10 @@ export default function App() {
       {/* Stats Row */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
         <StatCard label="Total Events" value={events.length} color="#60a5fa" />
-        <StatCard label="Admitted" value={topicCounts['patient.admitted'] || 0} color="#38bdf8" />
-        <StatCard label="Lab Results" value={topicCounts['lab.result.created'] || 0} color="#34d399" />
-        <StatCard label="FHIR Docs" value={topicCounts['fhir.document.created'] || 0} color="#a78bfa" />
-        <StatCard label="Notifications" value={topicCounts['notification.sent'] || 0} color="#fb923c" />
+        <StatCard label="Admitted" value={topicCounts['patient-admitted'] || 0} color="#38bdf8" />
+        <StatCard label="Lab Results" value={topicCounts['lab-result-created'] || 0} color="#34d399" />
+        <StatCard label="FHIR Docs" value={topicCounts['fhir-document-created'] || 0} color="#a78bfa" />
+        <StatCard label="Notifications" value={topicCounts['notification-sent'] || 0} color="#fb923c" />
         <StatCard label="DLQ" value={dlqEvents.length} color="#f87171" />
       </div>
 
@@ -173,7 +211,7 @@ export default function App() {
           <AreaChart data={throughputData}>
             <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
             <XAxis dataKey="time" tick={{ fill: '#64748b', fontSize: 10 }} />
-            <YAxis tick={{ fill: '#64748b', fontSize: 10 }} />
+            <YAxis allowDecimals={false} tick={{ fill: '#64748b', fontSize: 10 }} />
             <Tooltip contentStyle={{ background: '#0f172a', border: '1px solid #334155', color: '#e2e8f0' }} />
             {Object.entries(TOPIC_COLORS).map(([topic, color]) => (
               <Area key={topic} type="monotone" dataKey={topic} stroke={color} fill={color + '22'} stackId="1" />
@@ -224,21 +262,31 @@ export default function App() {
         </div>
       </div>
 
+      {/* Message Inspector */}
+      <MessageInspector event={selectedEvent} onClose={() => setSelectedEvent(null)} />
+
       {/* Live Event Stream */}
       <div style={{ background: '#1e293b', borderRadius: 8, padding: 16 }}>
         <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1 }}>
-          Live Event Stream
+          Live Event Stream <span style={{ fontWeight: 400, textTransform: 'none', fontSize: 11 }}> — click a row to inspect</span>
         </div>
         <div style={{ overflowY: 'auto', maxHeight: 320, fontFamily: 'monospace' }}>
           {events.slice(0, 50).map((e, i) => (
-            <div key={i} style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              padding: '4px 0',
-              borderBottom: '1px solid #0f172a',
-              fontSize: 12,
-            }}>
+            <div
+              key={i}
+              onClick={() => setSelectedEvent(prev => prev === e ? null : e)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '5px 6px',
+                borderBottom: '1px solid #0f172a',
+                fontSize: 12,
+                cursor: 'pointer',
+                borderRadius: 4,
+                background: selectedEvent === e ? '#0f172a' : 'transparent',
+              }}
+            >
               <span style={{ color: '#475569', minWidth: 80, fontSize: 10 }}>
                 {new Date(e.timestamp).toLocaleTimeString()}
               </span>
