@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/gin-gonic/gin"
@@ -74,10 +76,16 @@ func handleSSE(broker *sseBroker) gin.HandlerFunc {
 		defer func() { broker.close <- ch }()
 
 		ctx := c.Request.Context()
+		keepalive := time.NewTicker(25 * time.Second)
+		defer keepalive.Stop()
 		c.Stream(func(w io.Writer) bool {
 			select {
 			case msg := <-ch:
 				c.SSEvent("event", msg)
+				return true
+			case <-keepalive.C:
+				// SSE comment — keeps the connection alive through proxies and load balancers
+				fmt.Fprintf(w, ": ping\n\n")
 				return true
 			case <-ctx.Done():
 				return false
