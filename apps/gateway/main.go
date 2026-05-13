@@ -206,6 +206,17 @@ func runBuiltinSimulator(ctx context.Context, pub message.Publisher, ctl *simula
 				continue
 			}
 
+			// Apply continuous chaos for downstream services: inject poison on their input topics
+			for svc, topic := range serviceInputTopic {
+				if svc == "adt-service" {
+					continue // already handled above
+				}
+				sc := chaos.get(svc)
+				if sc.Mode == chaosModePoison && rand.Float64() < sc.ErrorRate {
+					_ = injectPoison(pub, topic)
+				}
+			}
+
 			pid, first, last, dob, ward := randPatient()
 			correlationID := uuid.New().String()
 

@@ -116,7 +116,7 @@ function useSSE(url) {
       try {
         const ev = JSON.parse(e.data)
         tickRef.current[ev.type] = (tickRef.current[ev.type] || 0) + 1
-        setEvents(prev => [ev, ...prev].slice(0, 500))
+        setEvents(prev => [ev, ...prev].slice(0, 2000))
       } catch (_) {}
     })
     return () => es.close()
@@ -292,24 +292,17 @@ function PipeNode({ svc, count, chaotic, on }) {
   )
 }
 
-function Pipeline({ svcCounts, cmdCount, chaos, tph }) {
+function Pipeline({ svcCounts, gwCount, auditCount, chaos, tph }) {
   const on = tph > 0
   return (
     <>
-      {on && (
-        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
-          <div style={{ height:1, flex:1, background:'linear-gradient(90deg,transparent,'+P.border+')' }} />
-          <span style={{ fontSize:11, color:P.tm, whiteSpace:'nowrap' }}>
-            <span style={{ color:'#60a5fa', fontWeight:700 }}>{tph}</span> evt/s in flight
-          </span>
-          <div style={{ height:1, flex:1, background:'linear-gradient(90deg,'+P.border+',transparent)' }} />
-        </div>
-      )}
       <div className="pipe-wrap">
         {PIPE.map((svc, i) => {
           const cs = chaos[svc.id]
           const chaotic = !!(cs && cs.mode && cs.mode !== '')
-          const count = svc.id === 'gateway' ? cmdCount : (svcCounts[svc.id] || 0)
+          const count = svc.id === 'gateway' ? gwCount
+                      : svc.id === 'audit-service' ? auditCount
+                      : (svcCounts[svc.id] || 0)
           return (
             <div key={svc.id} style={{ display:'flex', alignItems:'center', gap:8 }}>
               <PipeNode svc={svc} count={count} chaotic={chaotic} on={on} />
@@ -644,10 +637,13 @@ export default function App() {
   const dlqEv = events.filter(e => e.type && e.type.endsWith('-dlq'))
   const altEv = events.filter(e => e.type === 'alert-created')
   const crit  = altEv.filter(e => { try { return JSON.parse(e.payload).severity==='critical' } catch(_){return false} })
-  const cmd     = cnt['command-patient-admit'] || 0
-  const down    = (cnt['patient-admitted']||0)+(cnt['lab-result-created']||0)+(cnt['fhir-document-created']||0)+(cnt['notification-sent']||0)
-  const fanout  = cmd > 0 ? (down/cmd).toFixed(1) : '—'
-  const curTph  = tphHist.length > 0 ? (tphHist[tphHist.length-1].tot || 0) : 0
+  const cmd       = cnt['command-patient-admit'] || 0
+  const down      = (cnt['patient-admitted']||0)+(cnt['lab-result-created']||0)+(cnt['fhir-document-created']||0)+(cnt['notification-sent']||0)
+  const fanout    = cmd > 0 ? (down/cmd).toFixed(1) : '—'
+  const curTph    = tphHist.length > 0 ? (tphHist[tphHist.length-1].tot || 0) : 0
+  const gwCount   = (svcC['gateway'] || 0) + (svcC['gateway-sim'] || 0)
+  const auditTopics = ['command-patient-admit','patient-admitted','patient-discharged','patient-transferred','lab-result-created','fhir-document-created','notification-sent','alert-created']
+  const auditCount  = auditTopics.reduce((s, t) => s + (cnt[t] || 0), 0)
   const anyOn   = CHAOS_SVCS.some(s => chaos[s] && chaos[s].mode && chaos[s].mode !== '')
   const pad     = w < 640 ? '12px' : '20px 24px'
 
@@ -718,7 +714,7 @@ export default function App() {
 
         {/* Pipeline */}
         <Box title="Message Pipeline — Watermill fan-out router" style={{ marginBottom:16 }}>
-          <Pipeline svcCounts={svcC} cmdCount={cmd} chaos={chaos} tph={curTph} />
+          <Pipeline svcCounts={svcC} gwCount={gwCount} auditCount={auditCount} chaos={chaos} tph={curTph} />
         </Box>
 
         {/* Charts row */}
@@ -733,8 +729,9 @@ export default function App() {
                   <XAxis dataKey="s" tick={{ fill:P.tm, fontSize:8 }} interval="preserveStartEnd" />
                   <YAxis allowDecimals={false} tick={{ fill:P.tm, fontSize:9 }} />
                   <Tooltip contentStyle={{ background:P.panel, border:'1px solid '+P.border, color:P.th, fontSize:11 }} labelStyle={{ color:P.tb }} />
+                  <Area key="tot" type="monotone" dataKey="tot" stroke="#60a5fa" fill="#60a5fa18" strokeWidth={2} isAnimationActive={false} dot={false} />
                   {Object.entries(TC).map(([k,v]) => (
-                    <Area key={k} type="monotone" dataKey={k} stroke={v} fill={v+'18'} stackId="s" isAnimationActive={false} dot={false} />
+                    <Area key={k} type="monotone" dataKey={k} stroke={v} fill="none" strokeWidth={1} strokeOpacity={0.7} isAnimationActive={false} dot={false} />
                   ))}
                 </AreaChart>
               </ResponsiveContainer>

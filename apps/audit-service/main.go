@@ -59,9 +59,12 @@ func main() {
 	allTopics := []string{
 		events.TopicCommandPatientAdmit,
 		events.TopicPatientAdmitted,
+		events.TopicPatientDischarged,
+		events.TopicPatientTransferred,
 		events.TopicLabResultCreated,
 		events.TopicFHIRDocumentCreated,
 		events.TopicNotificationSent,
+		events.TopicAlertCreated,
 	}
 
 	var wg sync.WaitGroup

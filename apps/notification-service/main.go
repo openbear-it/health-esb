@@ -43,6 +43,21 @@ func main() {
 		logger.Error("create subscriber lab", "error", err)
 		return
 	}
+	subDischarge, err := messaging.NewSubscriber(cfg.AMQPUrl, serviceName+"-discharge", wmLogger)
+	if err != nil {
+		logger.Error("create subscriber discharge", "error", err)
+		return
+	}
+	subTransfer, err := messaging.NewSubscriber(cfg.AMQPUrl, serviceName+"-transfer", wmLogger)
+	if err != nil {
+		logger.Error("create subscriber transfer", "error", err)
+		return
+	}
+	subAlert, err := messaging.NewSubscriber(cfg.AMQPUrl, serviceName+"-alert", wmLogger)
+	if err != nil {
+		logger.Error("create subscriber alert", "error", err)
+		return
+	}
 
 	router, err := messaging.NewRouter(messaging.RouterConfig{ServiceName: serviceName, Logger: wmLogger})
 	if err != nil {
@@ -68,6 +83,33 @@ func main() {
 		events.TopicNotificationSent,
 		pub,
 		handleLabNotification(metrics, logger),
+	)
+
+	router.AddHandler(
+		"notify-discharged",
+		events.TopicPatientDischarged,
+		subDischarge,
+		events.TopicNotificationSent,
+		pub,
+		handleDischargeNotification(metrics, logger),
+	)
+
+	router.AddHandler(
+		"notify-transferred",
+		events.TopicPatientTransferred,
+		subTransfer,
+		events.TopicNotificationSent,
+		pub,
+		handleTransferNotification(metrics, logger),
+	)
+
+	router.AddHandler(
+		"notify-alert",
+		events.TopicAlertCreated,
+		subAlert,
+		events.TopicNotificationSent,
+		pub,
+		handleAlertNotification(metrics, logger),
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -130,6 +172,92 @@ func handleLabNotification(m *observability.Metrics, logger *slog.Logger) messag
 			PatientID: lab.PatientID,
 			Channel:   "sms",
 			Message:   fmt.Sprintf("ALERT: Abnormal lab result for patient %s — %s: %.2f %s", lab.PatientID, lab.TestName, lab.Value, lab.Unit),
+		}
+
+		return publishNotification(topic, serviceName, inEvt.CorrelationID, notification, m, logger, start)
+	}
+}
+
+func handleDischargeNotification(m *observability.Metrics, logger *slog.Logger) message.HandlerFunc {
+	return func(msg *message.Message) ([]*message.Message, error) {
+		start := time.Now()
+		topic := events.TopicNotificationSent
+
+		inEvt, err := messaging.DecodeEvent(msg)
+		if err != nil {
+			m.MessagesFailedTotal.WithLabelValues(topic).Inc()
+			return nil, err
+		}
+
+		payload, err := events.Decode[events.PatientDischargedPayload](inEvt)
+		if err != nil {
+			m.MessagesFailedTotal.WithLabelValues(topic).Inc()
+			return nil, err
+		}
+
+		notification := events.NotificationPayload{
+			PatientID: payload.PatientID,
+			Channel:   "email",
+			Message:   fmt.Sprintf("Patient %s %s has been discharged from ward %s. Reason: %s.", payload.FirstName, payload.LastName, payload.Ward, payload.Reason),
+		}
+
+		return publishNotification(topic, serviceName, inEvt.CorrelationID, notification, m, logger, start)
+	}
+}
+
+func handleTransferNotification(m *observability.Metrics, logger *slog.Logger) message.HandlerFunc {
+	return func(msg *message.Message) ([]*message.Message, error) {
+		start := time.Now()
+		topic := events.TopicNotificationSent
+
+		inEvt, err := messaging.DecodeEvent(msg)
+		if err != nil {
+			m.MessagesFailedTotal.WithLabelValues(topic).Inc()
+			return nil, err
+		}
+
+		payload, err := events.Decode[events.PatientTransferPayload](inEvt)
+		if err != nil {
+			m.MessagesFailedTotal.WithLabelValues(topic).Inc()
+			return nil, err
+		}
+
+		notification := events.NotificationPayload{
+			PatientID: payload.PatientID,
+			Channel:   "email",
+			Message:   fmt.Sprintf("Patient %s %s transferred from %s to %s. Reason: %s.", payload.FirstName, payload.LastName, payload.FromWard, payload.ToWard, payload.Reason),
+		}
+
+		return publishNotification(topic, serviceName, inEvt.CorrelationID, notification, m, logger, start)
+	}
+}
+
+func handleAlertNotification(m *observability.Metrics, logger *slog.Logger) message.HandlerFunc {
+	return func(msg *message.Message) ([]*message.Message, error) {
+		start := time.Now()
+		topic := events.TopicNotificationSent
+
+		inEvt, err := messaging.DecodeEvent(msg)
+		if err != nil {
+			m.MessagesFailedTotal.WithLabelValues(topic).Inc()
+			return nil, err
+		}
+
+		payload, err := events.Decode[events.AlertPayload](inEvt)
+		if err != nil {
+			m.MessagesFailedTotal.WithLabelValues(topic).Inc()
+			return nil, err
+		}
+
+		channel := "sms"
+		if payload.Severity == "low" || payload.Severity == "medium" {
+			channel = "email"
+		}
+
+		notification := events.NotificationPayload{
+			PatientID: payload.PatientID,
+			Channel:   channel,
+			Message:   fmt.Sprintf("[%s] Alert for patient %s: %s", payload.Severity, payload.PatientID, payload.Message),
 		}
 
 		return publishNotification(topic, serviceName, inEvt.CorrelationID, notification, m, logger, start)
