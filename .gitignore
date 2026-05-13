@@ -1,5 +1,5 @@
 # ── Go ──────────────────────────────────────────────────────────────────────
-# Compiled binaries
+# Compiled binaries (in service dirs — produced by go build inside each dir)
 apps/gateway/gateway
 apps/adt-service/adt-service
 apps/lab-service/lab-service
@@ -7,6 +7,15 @@ apps/fhir-bridge/fhir-bridge
 apps/audit-service/audit-service
 apps/notification-service/notification-service
 apps/simulator/simulator
+
+# Compiled binaries (at repo root — produced by go build ./apps/... from root)
+/gateway
+/adt-service
+/lab-service
+/fhir-bridge
+/audit-service
+/notification-service
+/simulator
 
 # Test binary, build artifacts
 *.exe

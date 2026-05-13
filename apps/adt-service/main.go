@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"net/http"
 	"os/signal"
 	"syscall"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/openbear-it/health-esb/internal/events"
 	"github.com/openbear-it/health-esb/internal/messaging"
 	"github.com/openbear-it/health-esb/internal/observability"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const serviceName = "adt-service"
@@ -57,6 +60,19 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	go func() {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.Handler())
+		mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprintln(w, `{"status":"ok"}`)
+		})
+		addr := fmt.Sprintf(":%d", cfg.Port)
+		logger.Info("metrics server listening", "addr", addr)
+		if err := http.ListenAndServe(addr, mux); err != nil {
+			logger.Error("metrics server", "error", err)
+		}
+	}()
 
 	if err := router.Run(ctx); err != nil {
 		logger.Error("router stopped", "error", err)

@@ -1,18 +1,28 @@
 global:
   scrape_interval: 15s
+  evaluation_interval: 15s
 
 scrape_configs:
 - job_name: gateway
   static_configs:
   - targets: [ 'gateway:8080' ]
-  metrics_path: /metrics
 
 - job_name: audit-service
   static_configs:
   - targets: [ 'audit-service:8081' ]
-  metrics_path: /metrics
 
-- job_name: nats
+- job_name: adt-service
   static_configs:
-  - targets: [ 'nats:8222' ]
-  metrics_path: /varz
+  - targets: [ 'adt-service:8082' ]
+
+- job_name: lab-service
+  static_configs:
+  - targets: [ 'lab-service:8083' ]
+
+- job_name: fhir-bridge
+  static_configs:
+  - targets: [ 'fhir-bridge:8084' ]
+
+- job_name: notification-service
+  static_configs:
+  - targets: [ 'notification-service:8085' ]

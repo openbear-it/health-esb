@@ -25,7 +25,7 @@ apps/dashboard/dist
 apps/dashboard/.vite
 
 # ── Kubernetes / deployment manifests ────────────────────────────────────────
-deployments
+deployments/k8s
 
 # ── Editor / OS ──────────────────────────────────────────────────────────────
 .DS_Store
