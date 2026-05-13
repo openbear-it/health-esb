@@ -2,7 +2,7 @@
 
 **A production-ready demo of a healthcare integration backbone built with [Watermill](https://watermill.io).**
 
-Healthcare systems generate a constant stream of clinical events — admissions, lab results, diagnostic documents, notifications. This project shows how to wire all of them together using an **event-driven architecture** where services are fully decoupled, resilient to failure, and trivially scalable.
+Healthcare systems generate a constant stream of clinical events — admissions, discharges, transfers, lab results, FHIR documents, notifications, alerts. This project shows how to wire all of them together using an **event-driven architecture** where services are fully decoupled, resilient to failure, and trivially scalable.
 
 Repository: <https://github.com/openbear-it/health-esb>
 
@@ -14,7 +14,7 @@ Most event-driven Go code ends up with the same boilerplate repeated in every se
 
 | Concern | Hand-rolled code | With Watermill |
 |---|---|---|
-| Broker connection | Manual NATS/Kafka client | `wmnats.NewPublisher` / `NewSubscriber` |
+| Broker connection | Manual AMQP client | `wmamqp.NewPublisher` / `NewSubscriber` |
 | Retry with backoff | Custom goroutine + timer | `middleware.Retry{MaxRetries: 5, ...}` |
 | Dead-letter queue | Custom per-topic logic | `middleware.PoisonQueue(pub, topic)` |
 | Correlation ID | Manual header propagation | `middleware.CorrelationID` |
@@ -29,8 +29,8 @@ In this project every Go service is a thin wrapper around a Watermill router. Th
 
 ```
  ╔══════════════════════════════════════════════════════════════════╗
- ║                       NATS JetStream                            ║
- ║                  (durable streams + consumer groups)            ║
+ ║                       RabbitMQ (AMQP)                           ║
+ ║            (durable fanout exchanges + per-service queues)      ║
  ╚══════════════════════════════════════════════════════════════════╝
         ▲  │              │              │              │
   REST  │  │              │              │              │
@@ -38,17 +38,17 @@ In this project every Go service is a thin wrapper around a Watermill router. Th
  ┌──────┴──────┐  ┌────────────┐  ┌──────────┐  ┌─────────────┐
  │   gateway   │  │adt-service │  │lab-service│  │ fhir-bridge │
  │  REST + SSE │  │            │  │           │  │             │
- └─────────────┘  └────────────┘  └──────────┘  └─────────────┘
-        │ SSE                           │              │
-        │              ┌────────────────┘              │
-        │              ▼                               ▼
+ │  + sim-ctl  │  └────────────┘  └──────────┘  └─────────────┘
+ │  + chaos    │                       │              │
+ └─────────────┘         ┌─────────────┘              │
+        │ SSE            ▼                             ▼
         │  ┌───────────────────────┐   ┌───────────────────────┐
         │  │ notification-service  │   │    audit-service       │
         │  └───────────────────────┘   │  (listens ALL topics)  │
         │                              └───────────────────────┘
         ▼
  ┌─────────────┐
- │  dashboard  │  React — live event stream via SSE
+ │  dashboard  │  React — SSE stream + full control panel
  └─────────────┘
 ```
 
@@ -56,62 +56,53 @@ In this project every Go service is a thin wrapper around a Watermill router. Th
 
 ## Event Flow (step by step)
 
-A single patient admission triggers a cascade of events across every service:
-
 ```
-① Client calls  POST /admissions  on the gateway
+① Client calls  POST /admissions  (or the built-in simulator fires)
         │
         ▼
-② gateway publishes  command.patient.admit
-   ┌─────────────────────────────────────────────┐
-   │ Event {                                      │
-   │   id:            "uuid-...",                 │
-   │   type:          "command.patient.admit",    │
-   │   correlationID: "uuid-...",  ◄─ propagated  │
-   │   source:        "gateway",                  │
-   │   payload:       PatientAdmitPayload{...}    │
-   │ }                                            │
-   └─────────────────────────────────────────────┘
-        │                    │
-        ▼                    ▼
-③ adt-service          audit-service
-  consumes               logs event
-  command.patient.admit
+② gateway publishes  command-patient-admit
         │
-        ▼
-④ adt-service publishes  patient.admitted
+        ├──► adt-service  (processes admission)
+        │         │
+        │         ▼
+        │    publishes  patient-admitted
+        │         │
+        │         ├──► lab-service
+        │         │         │  (runs HbA1c, WBC, Platelets, Glucose, Creatinine)
+        │         │         ▼
+        │         │    publishes  lab-result-created  (one per test)
+        │         │         │
+        │         │         ├──► fhir-bridge
+        │         │         │         │  (wraps in FHIR R4 Observation)
+        │         │         │         ▼
+        │         │         │    publishes  fhir-document-created
+        │         │         │
+        │         │         └──► notification-service  (SMS if abnormal)
+        │         │
+        │         └──► notification-service  (admission email)
         │
-        ├──► audit-service        (logs event)
-        ├──► notification-service (sends admission email)
-        └──► lab-service
-                │
-                ▼
-⑤ lab-service runs simulated tests, publishes  lab.result.created
-   (one event per test: HbA1c, CBC, CRP, …)
-        │
-        ├──► audit-service        (logs event)
-        ├──► notification-service (sends SMS if value is abnormal)
-        └──► fhir-bridge
-                │
-                ▼
-⑥ fhir-bridge wraps the result in a FHIR Observation resource,
-  publishes  fhir.document.created
-        │
-        └──► audit-service        (logs event)
+        └──► audit-service  (listens to every topic)
 
-⑦ gateway SSE broker forwards every topic to the dashboard
-  in real time.
+③ Client calls  POST /discharges  →  patient-discharged
+④ Client calls  POST /transfers   →  patient-transferred
+⑤ Client calls  POST /alerts      →  alert-created
+
+⑦ gateway SSE broker forwards ALL topics to the dashboard in real time.
 ```
 
 ### Topics
 
 | Topic | Producer | Consumers |
 |---|---|---|
-| `command.patient.admit` | gateway | adt-service, audit-service |
-| `patient.admitted` | adt-service | lab-service, notification-service, audit-service |
-| `lab.result.created` | lab-service | fhir-bridge, notification-service, audit-service |
-| `fhir.document.created` | fhir-bridge | audit-service |
-| `notification.sent` | notification-service | audit-service |
+| `command-patient-admit` | gateway, gateway-sim | adt-service, audit-service |
+| `patient-admitted` | adt-service | lab-service, notification-service, audit-service |
+| `patient-discharged` | gateway | audit-service |
+| `patient-transferred` | gateway | audit-service |
+| `lab-result-created` | lab-service | fhir-bridge, notification-service, audit-service |
+| `lab-result-validated` | (future) | — |
+| `fhir-document-created` | fhir-bridge | audit-service |
+| `notification-sent` | notification-service | audit-service |
+| `alert-created` | gateway | audit-service |
 | `*.dlq` | Watermill middleware | (manual inspection) |
 
 ---
@@ -126,7 +117,7 @@ Every service calls `messaging.NewRouter()` which builds a Watermill router prec
 CorrelationID  →  ensures the same correlationID flows through the whole chain
 Recoverer      →  catches panics, nacks the message (triggers retry)
 Retry          →  5 attempts with exponential backoff (1s → 2s → 4s → 8s → 16s)
-PoisonQueue    →  after 5 failures routes to <topic>.dlq
+PoisonQueue    →  after 5 failures routes to <topic>-dlq
 ```
 
 ```go
@@ -142,57 +133,22 @@ router.AddMiddleware(
         Logger:          wmLogger,
     }.Middleware,
 )
-
-poisonMiddleware, _ := middleware.PoisonQueue(publisher, topic+".dlq")
+poisonMiddleware, _ := middleware.PoisonQueue(publisher, topic+"-dlq")
 router.AddMiddleware(poisonMiddleware)
 ```
 
 ### Handler definition
 
-Each service adds exactly one handler per topic it consumes:
-
 ```go
-// apps/adt-service/main.go  (simplified)
 router.AddHandler(
-    "adt.admit",                          // handler name (unique)
-    events.TopicCommandPatientAdmit,      // input topic
+    "adt-handle-admit",
+    events.TopicCommandPatientAdmit,
     subscriber,
-    events.TopicPatientAdmitted,          // output topic
+    events.TopicPatientAdmitted,
     publisher,
     handleAdmit,
 )
 ```
-
-The handler receives a `*message.Message` and returns `[]*message.Message` to publish:
-
-```go
-func handleAdmit(msg *message.Message) ([]*message.Message, error) {
-    evt, _ := messaging.DecodeEvent(msg)
-    payload, _ := events.Decode[events.PatientAdmitPayload](evt)
-
-    admitted := events.New(events.TypePatientAdmitted, "adt-service",
-        evt.CorrelationID, events.PatientAdmittedPayload{...})
-
-    return messaging.ToMessages(admitted)
-}
-```
-
-### NATS JetStream — durable consumers
-
-The subscriber uses `QueueGroupPrefix` so that multiple replicas of the same service share a consumer group. NATS delivers each message to exactly one replica:
-
-```go
-// internal/messaging/router.go
-wmnats.SubscriberConfig{
-    JetStream: wmnats.JetStreamConfig{
-        AutoProvision: true,
-        DurablePrefix: consumerGroup,   // e.g. "lab-service"
-    },
-    QueueGroupPrefix: consumerGroup,
-}
-```
-
-Scale `lab-service` to 10 replicas → all 10 share one consumer group → automatic load balancing with zero configuration.
 
 ---
 
@@ -200,14 +156,59 @@ Scale `lab-service` to 10 replicas → all 10 share one consumer group → autom
 
 | Service | Port | Role |
 |---|---|---|
-| `gateway` | 8080 | REST entry point. Accepts `POST /admissions` and `POST /lab-results`, publishes events to NATS. Streams all events to the dashboard via `GET /events/stream` (SSE). Exposes `GET /metrics`. |
-| `adt-service` | — | Admission Discharge Transfer. Processes `command.patient.admit`, enriches data, emits `patient.admitted`. |
-| `lab-service` | — | Simulates a laboratory. For each admitted patient generates one event per test (HbA1c, CBC, CRP, Glucose, Creatinine) with random values. Flags abnormal results. |
-| `fhir-bridge` | — | Healthcare interoperability. Converts lab results to [FHIR R4 Observation](https://www.hl7.org/fhir/observation.html) JSON and publishes them. |
+| `gateway` | 8080 | REST entry point. Exposes all patient/lab/alert endpoints. Built-in simulator with configurable rate. Chaos injection API. Streams all events to the dashboard via SSE. |
+| `adt-service` | — | Admission/Discharge/Transfer. Processes `command-patient-admit`, enriches data, emits `patient-admitted`. |
+| `lab-service` | — | Simulates a laboratory. For each admitted patient generates one event per test (HbA1c, WBC, Platelets, Glucose, Creatinine) with random values. Flags abnormal results. |
+| `fhir-bridge` | — | Healthcare interoperability. Converts lab results to FHIR R4 Observation JSON and publishes them. |
 | `notification-service` | — | Sends simulated email (admission) and SMS (abnormal results). |
 | `audit-service` | 8081 | Subscribes to every topic. Keeps an in-memory audit log queryable at `GET /audit`. |
-| `simulator` | — | Generates a synthetic `POST /admissions` every 2 seconds. Used for demos. |
-| `dashboard` | 80 | React + Vite + Recharts. Connects to the SSE stream. Shows per-service counters, live event table, throughput chart, DLQ monitor. |
+| `simulator` | — | Standalone traffic generator. Generates a synthetic `POST /admissions` every 2 seconds. Alternative to the gateway built-in simulator. |
+| `dashboard` | 80 | React + Vite + Recharts. Full interactive control panel: live stream, charts, simulator control, chaos engineering, manual event injection. |
+
+---
+
+## Dashboard features
+
+The React dashboard connects to the gateway SSE stream and provides:
+
+### Live monitoring
+- **Stats row** — per-event-type counters: admissions, discharges, transfers, lab results, FHIR docs, notifications, alerts, DLQ
+- **Service pipeline** — per-service event counters with chaos indicator (⚡ icon when a service is disrupted)
+- **Throughput chart** — stacked area chart, one area per topic, 60-second rolling window
+- **Event distribution** — bar chart, pie chart, combined DLQ + alert panel
+- **Live event stream** — scrollable table with per-row badge, filterable by type and free text; click any row to open the **Message Inspector** with full JSON payload
+
+### Simulator control
+Control the **built-in gateway simulator** without running the external `simulator` service:
+
+| Control | Description |
+|---|---|
+| Rate slider | 0.1 – 20 events/second |
+| ▶ Start / ■ Stop | Enable or disable the synthetic traffic |
+| Burst ×5 / ×10 / ×20 | Instantly set rate to 5, 10, or 20 evt/s |
+
+### Chaos engineering
+Inject faults into any downstream service from the dashboard:
+
+| Button | Effect |
+|---|---|
+| **Poison** | Publishes a malformed message to the service's input topic. Watermill retries 5 times then routes to DLQ. The DLQ counter in the stats row increments. |
+| **Drop 50%** | The gateway discards ~50% of messages destined for that service. |
+| **Off** | Removes the fault for that service. |
+| **Reset all** | Clears all faults at once. |
+
+Services with active chaos show an ⚡ icon in the pipeline view.
+
+### Manual event injection
+Send any event type directly from the dashboard:
+
+| Form | Endpoint | Key fields |
+|---|---|---|
+| Admission | `POST /admissions` | patient ID, name, DOB, ward |
+| Discharge | `POST /discharges` | patient ID, ward, reason (recovered / transferred / deceased / self-discharge) |
+| Transfer | `POST /transfers` | patient ID, from-ward, to-ward, reason |
+| Lab Result | `POST /lab-results` | patient ID, test selector, value slider (shows ABNORMAL badge when out of range) |
+| Alert | `POST /alerts` | patient ID, severity (low/medium/high/critical), category (vital/lab/medication/system), message |
 
 ---
 
@@ -215,23 +216,19 @@ Scale `lab-service` to 10 replicas → all 10 share one consumer group → autom
 
 ```
 health-esb/
-├── .github/
-│   └── workflows/
-│       ├── build-images.yml   ← multi-platform Docker builds (amd64 + arm64)
-│       └── go-ci.yml          ← build, test, format check
 ├── apps/
-│   ├── gateway/               REST API + SSE broker
+│   ├── gateway/               REST API + SSE + built-in simulator + chaos API
 │   ├── adt-service/           Admission processing
 │   ├── lab-service/           Lab result simulation
 │   ├── fhir-bridge/           FHIR Observation generation
 │   ├── audit-service/         All-event audit log
 │   ├── notification-service/  Email & SMS simulation
-│   ├── simulator/             Traffic generator
-│   └── dashboard/             React live dashboard
+│   ├── simulator/             Standalone traffic generator
+│   └── dashboard/             React live dashboard (full control panel)
 ├── internal/
-│   ├── events/                Canonical Event type, topic constants, payloads
+│   ├── events/                Canonical Event type, all topic constants, all payloads
 │   ├── messaging/             Watermill router factory + pub/sub helpers
-│   ├── config/                Env-based config (PORT, NATS_URL, LOG_LEVEL …)
+│   ├── config/                Env-based config (PORT, AMQP_URL, LOG_LEVEL …)
 │   ├── observability/         slog logger, Prometheus metrics, OTel tracing
 │   ├── fhir/                  FHIR Observation builder
 │   └── hl7/                   Minimal HL7 v2 segment parser
@@ -239,8 +236,8 @@ health-esb/
 │   ├── docker/                Dockerfiles (multi-stage, multi-platform)
 │   └── k8s/                   Kubernetes manifests for every component
 ├── Makefile
-├── go.mod                     Root module: github.com/openbear-it/health-esb
-└── go.work                    Go workspace (root + all service modules)
+├── go.mod
+└── go.work
 ```
 
 ---
@@ -248,18 +245,18 @@ health-esb/
 ## Quick start (local, no Docker)
 
 ```bash
-# 1. Start NATS JetStream
-make run-nats
+# 1. Start RabbitMQ
+make run-rabbitmq   # or: docker run -d -p 5672:5672 rabbitmq:3-management
 
-# 2. In separate terminals, run each service
-cd apps/gateway            && go run .
-cd apps/adt-service        && go run .
-cd apps/lab-service        && go run .
-cd apps/fhir-bridge        && go run .
-cd apps/audit-service      && go run .
+# 2. Start each service in separate terminals
+cd apps/gateway              && go run .
+cd apps/adt-service          && go run .
+cd apps/lab-service          && go run .
+cd apps/fhir-bridge          && go run .
+cd apps/audit-service        && go run .
 cd apps/notification-service && go run .
 
-# 3. Start the traffic simulator
+# 3. (Optional) Start the external simulator
 make simulator
 
 # 4. Watch the SSE stream
@@ -272,29 +269,99 @@ cd apps/dashboard && npm install && npm run dev
 
 ---
 
-## Kubernetes deployment
+## REST API reference
 
-Images are published to `ghcr.io/openbear-it/health-esb/<service>` by the GitHub Actions workflow on every push to `main`.
+### Patient events
 
 ```bash
-# Deploy all manifests in dependency order
-make k8s-deploy
+# Admit a patient
+curl -X POST http://localhost:8080/admissions \
+  -H 'Content-Type: application/json' \
+  -d '{"patient_id":"P001","first_name":"Alice","last_name":"Smith","date_of_birth":"1980-05-10","ward":"ICU"}'
 
-# Check rollout status
-make k8s-status
+# Discharge a patient
+curl -X POST http://localhost:8080/discharges \
+  -H 'Content-Type: application/json' \
+  -d '{"patient_id":"P001","first_name":"Alice","last_name":"Smith","ward":"ICU","reason":"recovered"}'
 
-# Tail logs for a specific service
+# Transfer a patient between wards
+curl -X POST http://localhost:8080/transfers \
+  -H 'Content-Type: application/json' \
+  -d '{"patient_id":"P001","first_name":"Alice","last_name":"Smith","from_ward":"Emergency","to_ward":"ICU","reason":"stabilized"}'
+```
+
+### Lab results
+
+```bash
+curl -X POST http://localhost:8080/lab-results \
+  -H 'Content-Type: application/json' \
+  -d '{"patient_id":"P001","test_name":"Glucose","value":250,"unit":"mg/dL","reference_lo":70,"reference_hi":100}'
+```
+
+### Alerts
+
+```bash
+curl -X POST http://localhost:8080/alerts \
+  -H 'Content-Type: application/json' \
+  -d '{"patient_id":"P001","severity":"critical","category":"vital","message":"Heart rate > 180 bpm","value":185,"threshold":130}'
+```
+
+### Built-in simulator
+
+```bash
+# Start at 2 evt/s
+curl -X POST http://localhost:8080/simulator/control \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"rate":2.0}'
+
+# Check status
+curl http://localhost:8080/simulator/status
+
+# Stop
+curl -X POST http://localhost:8080/simulator/control \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled":false,"rate":1.0}'
+```
+
+### Chaos engineering
+
+```bash
+# Inject poison messages into lab-service (→ DLQ buildup)
+curl -X POST http://localhost:8080/chaos \
+  -H 'Content-Type: application/json' \
+  -d '{"service":"lab-service","mode":"poison","error_rate":1.0}'
+
+# Drop 50% of messages going to fhir-bridge
+curl -X POST http://localhost:8080/chaos \
+  -H 'Content-Type: application/json' \
+  -d '{"service":"fhir-bridge","mode":"drop","error_rate":0.5}'
+
+# Check current chaos state
+curl http://localhost:8080/chaos/status
+
+# Reset all faults
+curl -X DELETE http://localhost:8080/chaos
+```
+
+Available services: `adt-service`, `lab-service`, `fhir-bridge`, `notification-service`, `audit-service`  
+Available modes: `poison` (→ DLQ), `drop` (silent discard), `""` (off)
+
+---
+
+## Kubernetes deployment
+
+```bash
+make k8s-deploy     # deploy all manifests in dependency order
+make k8s-status     # check rollout status
 make k8s-logs SERVICE=lab-service
-
-# Remove everything
-make k8s-delete
+make k8s-delete     # remove everything
 ```
 
 ### Scaling
 
 ```bash
 kubectl scale deployment lab-service -n health-esb --replicas=5
-# All 5 pods share the "lab-service" NATS consumer group automatically.
+# All 5 pods share the "lab-service" AMQP consumer queue automatically.
 ```
 
 ---
@@ -303,36 +370,26 @@ kubectl scale deployment lab-service -n health-esb --replicas=5
 
 ### `build-images.yml`
 
-Triggered on: push to `main`, version tags (`v*.*.*`), pull requests.
-
-- **Matrix build**: one job per service (gateway, adt-service, lab-service, fhir-bridge, audit-service, notification-service, simulator, dashboard)
+- **Matrix build**: one job per service
 - **Platforms**: `linux/amd64` + `linux/arm64` via Docker Buildx + QEMU
 - **Registry**: `ghcr.io/openbear-it/health-esb/<service>`
-- **Tags**:
-  - Push to `main` → `:main`, `:sha-<short>`  + `:latest`
-  - Tag `v1.2.3` → `:1.2.3`, `:1.2`
-  - Pull request → `:pr-<n>` (not pushed)
-- **Cache**: GitHub Actions cache per service for fast rebuilds
+- Tags: `:latest` on `main`, `:v1.2.3` on version tags, `:pr-<n>` on PRs
 
 ### `go-ci.yml`
 
-Triggered on: push to `main`, pull requests.
-
 - Builds root module + all 7 Go services
-- Runs `go test ./...` across all modules
+- Runs `go test ./...`
 - Enforces `gofmt` formatting
 
 ---
 
 ## Configuration
 
-All services read from environment variables:
-
 | Variable | Default | Description |
 |---|---|---|
 | `SERVICE_NAME` | set per-service | Identifier used in logs and metrics |
 | `PORT` | `8080` | HTTP listen port |
-| `NATS_URL` | `nats://localhost:4222` | NATS JetStream endpoint |
+| `AMQP_URL` | `amqp://guest:guest@localhost:5672/` | RabbitMQ endpoint |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `OTLP_ENDPOINT` | `http://localhost:4318` | OpenTelemetry collector (OTLP HTTP) |
 
@@ -340,7 +397,7 @@ All services read from environment variables:
 
 ## Observability
 
-### Prometheus metrics  (`GET /metrics` on gateway and audit-service)
+### Prometheus metrics (`GET /metrics` on gateway and audit-service)
 
 Each service registers:
 - `healthesb_<svc>_messages_processed_total`
@@ -349,11 +406,23 @@ Each service registers:
 - `healthesb_<svc>_retry_total`
 - `healthesb_<svc>_dlq_total`
 
-Prometheus discovers pods automatically via annotation `prometheus.io/scrape: "true"`.
-
 ### Distributed tracing
 
-Set `OTLP_ENDPOINT` to point to any OpenTelemetry-compatible collector (Jaeger, Tempo, etc.). The `correlationID` in every event maps directly to the trace context.
+Set `OTLP_ENDPOINT` to any OpenTelemetry-compatible collector (Jaeger, Tempo, etc.). The `correlationID` in every event maps directly to the trace context.
+
+---
+
+## Dead-letter queue
+
+When a handler fails 5 consecutive times the message is routed to `<topic>-dlq`:
+
+```
+lab-result-created   →  (after 5 retries)  →  lab-result-created-dlq
+patient-admitted     →  (after 5 retries)  →  patient-admitted-dlq
+```
+
+Trigger this from the dashboard with the **Chaos → Poison** button.  
+The DLQ counter in the stats row increments in real time.
 
 ---
 
@@ -364,28 +433,17 @@ Set `OTLP_ENDPOINT` to point to any OpenTelemetry-compatible collector (Jaeger, 
    mkdir -p apps/my-service && cd apps/my-service
    go mod init github.com/openbear-it/health-esb/apps/my-service
    ```
-2. Add the workspace entry: `go work use ./apps/my-service`
-3. Add the replace directive in your `go.mod`:
+2. Add `go work use ./apps/my-service`
+3. Add replace directive in `go.mod`:
    ```
    require github.com/openbear-it/health-esb v0.0.0
    replace github.com/openbear-it/health-esb => ../../
    ```
-4. Write your handler using the shared `messaging` package (copy any existing service as template)
+4. Write your handler (copy any existing service as template)
 5. Add a `Dockerfile` in `deployments/docker/`
 6. Add a K8s manifest in `deployments/k8s/`
 7. Add the service to the matrix in `.github/workflows/build-images.yml`
 
-The broker connection, retry, DLQ, correlation ID, and metrics are all provided by `internal/messaging` — you write only the business logic.
+Broker connection, retry, DLQ, correlation ID, and metrics are all provided by `internal/messaging`.
 
----
 
-## Dead-letter queue
-
-When a handler fails 5 consecutive times the message is automatically routed to `<topic>.dlq`:
-
-```
-lab.result.created   →  (after 5 retries)  →  lab.result.created.dlq
-patient.admitted     →  (after 5 retries)  →  patient.admitted.dlq
-```
-
-The dashboard DLQ panel shows the count of messages in each dead-letter topic. To reprocess a DLQ, publish its messages back to the original topic.

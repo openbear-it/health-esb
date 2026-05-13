@@ -35,10 +35,40 @@ type FHIRDocumentPayload struct {
 	Document     json.RawMessage `json:"document"`
 }
 
+// PatientDischargedPayload is the payload for patient-discharged.
+type PatientDischargedPayload struct {
+	PatientID   string `json:"patient_id"`
+	FirstName   string `json:"first_name"`
+	LastName    string `json:"last_name"`
+	Ward        string `json:"ward"`
+	DischargeAt string `json:"discharge_at"`
+	Reason      string `json:"reason"` // recovered | transferred | deceased | self-discharge
+}
+
+// PatientTransferPayload is the payload for patient-transferred.
+type PatientTransferPayload struct {
+	PatientID string `json:"patient_id"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	FromWard  string `json:"from_ward"`
+	ToWard    string `json:"to_ward"`
+	Reason    string `json:"reason"`
+}
+
+// AlertPayload is the payload for alert-created.
+type AlertPayload struct {
+	PatientID string  `json:"patient_id"`
+	Severity  string  `json:"severity"` // low | medium | high | critical
+	Category  string  `json:"category"` // vital | lab | medication | system
+	Message   string  `json:"message"`
+	Value     float64 `json:"value,omitempty"`
+	Threshold float64 `json:"threshold,omitempty"`
+}
+
 // NotificationPayload is the payload for notification.sent.
 type NotificationPayload struct {
 	PatientID string `json:"patient_id"`
-	Channel   string `json:"channel"` // email | sms
+	Channel   string `json:"channel"` // email | sms | push
 	Message   string `json:"message"`
 }
 

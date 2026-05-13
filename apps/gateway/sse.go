@@ -97,10 +97,14 @@ func handleSSE(broker *sseBroker) gin.HandlerFunc {
 
 func forwardToSSE(ctx context.Context, sub message.Subscriber, broker *sseBroker, logger *slog.Logger) {
 	topics := []string{
+		events.TopicCommandPatientAdmit,
 		events.TopicPatientAdmitted,
+		events.TopicPatientDischarged,
+		events.TopicPatientTransferred,
 		events.TopicLabResultCreated,
 		events.TopicFHIRDocumentCreated,
 		events.TopicNotificationSent,
+		events.TopicAlertCreated,
 	}
 
 	for _, topic := range topics {

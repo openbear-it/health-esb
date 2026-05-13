@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/ThreeDotsLabs/watermill"
+	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/openbear-it/health-esb/internal/config"
@@ -17,9 +20,189 @@ import (
 	"github.com/openbear-it/health-esb/internal/messaging"
 	"github.com/openbear-it/health-esb/internal/observability"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-
-	"github.com/ThreeDotsLabs/watermill/message"
 )
+
+// ─── Built-in simulator ───────────────────────────────────────────────────────
+
+type simulatorCtl struct {
+	mu      sync.RWMutex
+	enabled bool
+	rate    float64 // events per second (0.1–20)
+}
+
+func (s *simulatorCtl) get() (bool, float64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.enabled, s.rate
+}
+
+func (s *simulatorCtl) set(enabled bool, rate float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rate < 0.1 {
+		rate = 0.1
+	}
+	if rate > 20 {
+		rate = 20
+	}
+	s.enabled = enabled
+	s.rate = rate
+}
+
+// ─── Chaos control ────────────────────────────────────────────────────────────
+
+type chaosMode string
+
+const (
+	chaosModeNone   chaosMode = ""
+	chaosModePoison chaosMode = "poison"
+	chaosDrop       chaosMode = "drop"
+)
+
+type serviceChaos struct {
+	Mode      chaosMode `json:"mode"`
+	ErrorRate float64   `json:"error_rate"` // 0–1
+}
+
+type chaosCtl struct {
+	mu       sync.RWMutex
+	services map[string]*serviceChaos
+}
+
+func newChaosCtl() *chaosCtl {
+	return &chaosCtl{
+		services: map[string]*serviceChaos{
+			"adt-service":          {Mode: chaosModeNone, ErrorRate: 0},
+			"lab-service":          {Mode: chaosModeNone, ErrorRate: 0},
+			"fhir-bridge":          {Mode: chaosModeNone, ErrorRate: 0},
+			"notification-service": {Mode: chaosModeNone, ErrorRate: 0},
+			"audit-service":        {Mode: chaosModeNone, ErrorRate: 0},
+		},
+	}
+}
+
+func (c *chaosCtl) get(svc string) serviceChaos {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if v, ok := c.services[svc]; ok {
+		return *v
+	}
+	return serviceChaos{}
+}
+
+func (c *chaosCtl) set(svc string, mode chaosMode, errorRate float64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.services[svc]; !ok {
+		return
+	}
+	c.services[svc] = &serviceChaos{Mode: mode, ErrorRate: errorRate}
+}
+
+func (c *chaosCtl) status() map[string]serviceChaos {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make(map[string]serviceChaos, len(c.services))
+	for k, v := range c.services {
+		out[k] = *v
+	}
+	return out
+}
+
+func (c *chaosCtl) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k := range c.services {
+		c.services[k] = &serviceChaos{Mode: chaosModeNone, ErrorRate: 0}
+	}
+}
+
+// serviceInputTopic is the primary topic to inject chaos messages into per service.
+var serviceInputTopic = map[string]string{
+	"adt-service":          events.TopicCommandPatientAdmit,
+	"lab-service":          events.TopicPatientAdmitted,
+	"fhir-bridge":          events.TopicLabResultCreated,
+	"notification-service": events.TopicPatientAdmitted,
+	"audit-service":        events.TopicPatientAdmitted,
+}
+
+// injectPoison publishes a malformed message to a topic.
+// Watermill will retry it 5 times then route it to the DLQ.
+func injectPoison(pub message.Publisher, topic string) error {
+	msg := message.NewMessage(uuid.New().String(), []byte(`{"__chaos":"poison"}`))
+	msg.Metadata.Set("correlation_id", uuid.New().String())
+	msg.Metadata.Set("event_type", topic)
+	return pub.Publish(topic, msg)
+}
+
+// ─── Synthetic data helpers ───────────────────────────────────────────────────
+
+var (
+	firstNames = []string{"Alice", "Bob", "Carol", "David", "Eva", "Frank", "Grace", "Henry", "Irene", "Jack"}
+	lastNames  = []string{"Smith", "Jones", "Brown", "Wilson", "Taylor", "Davis", "Clark", "Hall", "Moore", "Lee"}
+	wards      = []string{"ICU", "Cardiology", "Oncology", "Pediatrics", "Emergency", "Surgery", "Neurology", "Orthopedics"}
+)
+
+func randPatient() (pid, first, last, dob, ward string) {
+	pid = fmt.Sprintf("P%04d", rand.Intn(9999))
+	first = firstNames[rand.Intn(len(firstNames))]
+	last = lastNames[rand.Intn(len(lastNames))]
+	year := 1940 + rand.Intn(65)
+	dob = fmt.Sprintf("%04d-%02d-%02d", year, 1+rand.Intn(12), 1+rand.Intn(28))
+	ward = wards[rand.Intn(len(wards))]
+	return
+}
+
+// ─── Built-in simulator goroutine ────────────────────────────────────────────
+
+func runBuiltinSimulator(ctx context.Context, pub message.Publisher, ctl *simulatorCtl, chaos *chaosCtl, logger *slog.Logger) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	var lastRate float64
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			enabled, rate := ctl.get()
+			if !enabled {
+				continue
+			}
+			if rate != lastRate {
+				ticker.Reset(time.Duration(float64(time.Second) / rate))
+				lastRate = rate
+			}
+
+			// Apply chaos for adt-service (first consumer of admission commands)
+			adtChaos := chaos.get("adt-service")
+			if adtChaos.Mode == chaosModePoison && rand.Float64() < adtChaos.ErrorRate {
+				_ = injectPoison(pub, events.TopicCommandPatientAdmit)
+				continue
+			}
+			if adtChaos.Mode == chaosDrop && rand.Float64() < adtChaos.ErrorRate {
+				continue
+			}
+
+			pid, first, last, dob, ward := randPatient()
+			correlationID := uuid.New().String()
+			evt, err := events.New(events.TopicCommandPatientAdmit, "gateway-sim", correlationID,
+				events.PatientAdmitPayload{
+					PatientID:   pid,
+					FirstName:   first,
+					LastName:    last,
+					DateOfBirth: dob,
+					Ward:        ward,
+				})
+			if err != nil {
+				continue
+			}
+			if err := messaging.Publish(pub, events.TopicCommandPatientAdmit, evt); err != nil {
+				logger.Error("builtin-sim publish", "error", err)
+			}
+		}
+	}
+}
 
 func main() {
 	cfg := config.Load("gateway")
@@ -37,6 +220,9 @@ func main() {
 
 	metrics := observability.NewMetrics("gateway")
 
+	simCtl := &simulatorCtl{enabled: false, rate: 1}
+	chaosControl := newChaosCtl()
+
 	// SSE broker: a channel fan-out for connected dashboard clients
 	sseBroker := newSSEBroker()
 	go sseBroker.run()
@@ -49,12 +235,35 @@ func main() {
 		go forwardToSSE(context.Background(), sub, sseBroker, logger)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go runBuiltinSimulator(ctx, pub, simCtl, chaosControl, logger)
+
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(corsMiddleware())
 	r.Use(requestLogger(logger))
 
+	// Patient events
 	r.POST("/admissions", handleAdmission(pub, metrics, logger))
+	r.POST("/discharges", handleDischarge(pub, metrics, logger))
+	r.POST("/transfers", handleTransfer(pub, metrics, logger))
+
+	// Lab & clinical
 	r.POST("/lab-results", handleLabResult(pub, metrics, logger))
+	r.POST("/alerts", handleAlert(pub, metrics, logger))
+
+	// Simulator control
+	r.GET("/simulator/status", handleSimulatorStatus(simCtl))
+	r.POST("/simulator/control", handleSimulatorControl(simCtl))
+
+	// Chaos control
+	r.GET("/chaos/status", handleChaosStatus(chaosControl))
+	r.POST("/chaos", handleChaosSet(pub, chaosControl))
+	r.DELETE("/chaos", handleChaosReset(chaosControl))
+
+	// Infrastructure
 	r.GET("/events/stream", handleSSE(sseBroker))
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 	r.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
@@ -63,9 +272,6 @@ func main() {
 		Addr:    fmt.Sprintf(":%d", cfg.Port),
 		Handler: r,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	go func() {
 		logger.Info("gateway listening", "port", cfg.Port)
@@ -79,6 +285,8 @@ func main() {
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
 }
+
+// ─── Request handlers ─────────────────────────────────────────────────────────
 
 // AdmissionRequest is the incoming REST payload for a patient admission.
 type AdmissionRequest struct {
@@ -122,12 +330,103 @@ func handleAdmission(pub message.Publisher, m *observability.Metrics, logger *sl
 
 		m.MessagesProcessedTotal.WithLabelValues(topic).Inc()
 		m.ProcessingDuration.WithLabelValues(topic).Observe(time.Since(start).Seconds())
-		logger.Info("event published",
-			"event_type", topic,
-			"correlation_id", correlationID,
-			"duration_ms", time.Since(start).Milliseconds(),
-		)
+		logger.Info("event published", "event_type", topic, "correlation_id", correlationID)
+		c.JSON(http.StatusAccepted, gin.H{"correlation_id": correlationID, "event_id": evt.ID})
+	}
+}
 
+// DischargeRequest is the REST payload for a patient discharge.
+type DischargeRequest struct {
+	PatientID string `json:"patient_id" binding:"required"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	Ward      string `json:"ward"`
+	Reason    string `json:"reason"` // recovered | transferred | deceased | self-discharge
+}
+
+func handleDischarge(pub message.Publisher, m *observability.Metrics, logger *slog.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		topic := events.TopicPatientDischarged
+
+		var req DischargeRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if req.Reason == "" {
+			req.Reason = "recovered"
+		}
+
+		correlationID := uuid.New().String()
+		evt, err := events.New(topic, "gateway", correlationID, events.PatientDischargedPayload{
+			PatientID:   req.PatientID,
+			FirstName:   req.FirstName,
+			LastName:    req.LastName,
+			Ward:        req.Ward,
+			DischargeAt: time.Now().UTC().Format(time.RFC3339),
+			Reason:      req.Reason,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+			return
+		}
+
+		if err := messaging.Publish(pub, topic, evt); err != nil {
+			m.MessagesFailedTotal.WithLabelValues(topic).Inc()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "publish failed"})
+			return
+		}
+
+		m.MessagesProcessedTotal.WithLabelValues(topic).Inc()
+		m.ProcessingDuration.WithLabelValues(topic).Observe(time.Since(start).Seconds())
+		c.JSON(http.StatusAccepted, gin.H{"correlation_id": correlationID, "event_id": evt.ID})
+	}
+}
+
+// TransferRequest is the REST payload for a patient transfer between wards.
+type TransferRequest struct {
+	PatientID string `json:"patient_id" binding:"required"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	FromWard  string `json:"from_ward" binding:"required"`
+	ToWard    string `json:"to_ward" binding:"required"`
+	Reason    string `json:"reason"`
+}
+
+func handleTransfer(pub message.Publisher, m *observability.Metrics, logger *slog.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		topic := events.TopicPatientTransferred
+
+		var req TransferRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		correlationID := uuid.New().String()
+		evt, err := events.New(topic, "gateway", correlationID, events.PatientTransferPayload{
+			PatientID: req.PatientID,
+			FirstName: req.FirstName,
+			LastName:  req.LastName,
+			FromWard:  req.FromWard,
+			ToWard:    req.ToWard,
+			Reason:    req.Reason,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+			return
+		}
+
+		if err := messaging.Publish(pub, topic, evt); err != nil {
+			m.MessagesFailedTotal.WithLabelValues(topic).Inc()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "publish failed"})
+			return
+		}
+
+		m.MessagesProcessedTotal.WithLabelValues(topic).Inc()
+		m.ProcessingDuration.WithLabelValues(topic).Observe(time.Since(start).Seconds())
 		c.JSON(http.StatusAccepted, gin.H{"correlation_id": correlationID, "event_id": evt.ID})
 	}
 }
@@ -178,6 +477,142 @@ func handleLabResult(pub message.Publisher, m *observability.Metrics, logger *sl
 		m.MessagesProcessedTotal.WithLabelValues(topic).Inc()
 		m.ProcessingDuration.WithLabelValues(topic).Observe(time.Since(start).Seconds())
 		c.JSON(http.StatusAccepted, gin.H{"correlation_id": correlationID, "event_id": evt.ID})
+	}
+}
+
+// AlertRequest is the incoming REST payload for a clinical alert.
+type AlertRequest struct {
+	PatientID string  `json:"patient_id" binding:"required"`
+	Severity  string  `json:"severity" binding:"required"` // low | medium | high | critical
+	Category  string  `json:"category" binding:"required"` // vital | lab | medication | system
+	Message   string  `json:"message" binding:"required"`
+	Value     float64 `json:"value"`
+	Threshold float64 `json:"threshold"`
+}
+
+func handleAlert(pub message.Publisher, m *observability.Metrics, logger *slog.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		topic := events.TopicAlertCreated
+
+		var req AlertRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		correlationID := uuid.New().String()
+		evt, err := events.New(topic, "gateway", correlationID, events.AlertPayload{
+			PatientID: req.PatientID,
+			Severity:  req.Severity,
+			Category:  req.Category,
+			Message:   req.Message,
+			Value:     req.Value,
+			Threshold: req.Threshold,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+			return
+		}
+
+		if err := messaging.Publish(pub, topic, evt); err != nil {
+			m.MessagesFailedTotal.WithLabelValues(topic).Inc()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "publish failed"})
+			return
+		}
+
+		m.MessagesProcessedTotal.WithLabelValues(topic).Inc()
+		m.ProcessingDuration.WithLabelValues(topic).Observe(time.Since(start).Seconds())
+		c.JSON(http.StatusAccepted, gin.H{"correlation_id": correlationID, "event_id": evt.ID})
+	}
+}
+
+// ─── Simulator control handlers ───────────────────────────────────────────────
+
+func handleSimulatorStatus(ctl *simulatorCtl) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		enabled, rate := ctl.get()
+		c.JSON(http.StatusOK, gin.H{"enabled": enabled, "rate": rate})
+	}
+}
+
+type simulatorControlRequest struct {
+	Enabled bool    `json:"enabled"`
+	Rate    float64 `json:"rate"`
+}
+
+func handleSimulatorControl(ctl *simulatorCtl) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req simulatorControlRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		ctl.set(req.Enabled, req.Rate)
+		enabled, rate := ctl.get()
+		c.JSON(http.StatusOK, gin.H{"enabled": enabled, "rate": rate})
+	}
+}
+
+// ─── Chaos control handlers ───────────────────────────────────────────────────
+
+func handleChaosStatus(ctl *chaosCtl) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, ctl.status())
+	}
+}
+
+type chaosSetRequest struct {
+	Service   string    `json:"service" binding:"required"`
+	Mode      chaosMode `json:"mode"`       // "" | "poison" | "drop"
+	ErrorRate float64   `json:"error_rate"` // 0–1
+}
+
+func handleChaosSet(pub message.Publisher, ctl *chaosCtl) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req chaosSetRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if req.ErrorRate < 0 {
+			req.ErrorRate = 0
+		}
+		if req.ErrorRate > 1 {
+			req.ErrorRate = 1
+		}
+		ctl.set(req.Service, req.Mode, req.ErrorRate)
+
+		// Immediately inject a poison pill when 100% poison is requested.
+		if req.Mode == chaosModePoison && req.ErrorRate >= 1 {
+			if topic, ok := serviceInputTopic[req.Service]; ok {
+				_ = injectPoison(pub, topic)
+			}
+		}
+
+		c.JSON(http.StatusOK, gin.H{"service": req.Service, "mode": req.Mode, "error_rate": req.ErrorRate})
+	}
+}
+
+func handleChaosReset(ctl *chaosCtl) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctl.reset()
+		c.JSON(http.StatusOK, gin.H{"status": "reset"})
+	}
+}
+
+// ─── Middleware ───────────────────────────────────────────────────────────────
+
+func corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type")
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
 	}
 }
 
