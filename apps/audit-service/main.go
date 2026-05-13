@@ -157,4 +157,5 @@ func handleAuditHTTP(w http.ResponseWriter, _ *http.Request) {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(auditLog)
+	
 }

@@ -372,7 +372,6 @@ func main() {
 	r.Use(gin.Recovery())
 	r.Use(corsMiddleware())
 	r.Use(requestLogger(logger))
-
 	// Patient events
 	r.POST("/admissions", handleAdmission(pub, metrics, logger))
 	r.POST("/discharges", handleDischarge(pub, metrics, logger))
