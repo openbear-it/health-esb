@@ -105,6 +105,11 @@ func forwardToSSE(ctx context.Context, sub message.Subscriber, broker *sseBroker
 		events.TopicFHIRDocumentCreated,
 		events.TopicNotificationSent,
 		events.TopicAlertCreated,
+		// DLQ topics — Watermill routes failed messages here after max retries
+		events.TopicPatientAdmitted + "-dlq",
+		events.TopicLabResultCreated + "-dlq",
+		events.TopicFHIRDocumentCreated + "-dlq",
+		events.TopicNotificationSent + "-dlq",
 	}
 
 	for _, topic := range topics {

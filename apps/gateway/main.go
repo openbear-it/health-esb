@@ -155,6 +155,28 @@ func randPatient() (pid, first, last, dob, ward string) {
 
 // ─── Built-in simulator goroutine ────────────────────────────────────────────
 
+var (
+	alertSeverities = []string{"low", "medium", "high", "critical"}
+	alertCategories = []string{"vital", "lab", "medication"}
+	alertMessages   = []string{
+		"SpO2 dropped below threshold",
+		"Heart rate outside normal range",
+		"Blood pressure critically high",
+		"Glucose level abnormal",
+		"Temperature elevated",
+	}
+	labTests = []struct {
+		name, unit    string
+		lo, hi, scale float64
+	}{
+		{"Hemoglobin", "g/dL", 12.0, 17.5, 20.0},
+		{"White Blood Cells", "10^3/uL", 4.5, 11.0, 15.0},
+		{"Platelets", "10^3/uL", 150, 400, 500},
+		{"Glucose", "mg/dL", 70, 100, 300},
+		{"Creatinine", "mg/dL", 0.6, 1.2, 2.0},
+	}
+)
+
 func runBuiltinSimulator(ctx context.Context, pub message.Publisher, ctl *simulatorCtl, chaos *chaosCtl, logger *slog.Logger) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -186,19 +208,114 @@ func runBuiltinSimulator(ctx context.Context, pub message.Publisher, ctl *simula
 
 			pid, first, last, dob, ward := randPatient()
 			correlationID := uuid.New().String()
-			evt, err := events.New(events.TopicCommandPatientAdmit, "gateway-sim", correlationID,
-				events.PatientAdmitPayload{
-					PatientID:   pid,
-					FirstName:   first,
-					LastName:    last,
-					DateOfBirth: dob,
-					Ward:        ward,
-				})
-			if err != nil {
-				continue
-			}
-			if err := messaging.Publish(pub, events.TopicCommandPatientAdmit, evt); err != nil {
-				logger.Error("builtin-sim publish", "error", err)
+
+			// Mix of event types: 70% admission, 10% discharge, 10% transfer, 5% lab, 5% alert
+			r := rand.Float64()
+			switch {
+			case r < 0.70:
+				// Patient admission (triggers fan-out through ADT → Lab → FHIR → Notify)
+				evt, err := events.New(events.TopicCommandPatientAdmit, "gateway-sim", correlationID,
+					events.PatientAdmitPayload{
+						PatientID:   pid,
+						FirstName:   first,
+						LastName:    last,
+						DateOfBirth: dob,
+						Ward:        ward,
+					})
+				if err != nil {
+					continue
+				}
+				if err := messaging.Publish(pub, events.TopicCommandPatientAdmit, evt); err != nil {
+					logger.Error("builtin-sim publish admission", "error", err)
+				}
+
+			case r < 0.80:
+				// Patient discharge
+				evt, err := events.New(events.TopicPatientDischarged, "gateway-sim", correlationID,
+					events.PatientDischargedPayload{
+						PatientID:   pid,
+						FirstName:   first,
+						LastName:    last,
+						Ward:        ward,
+						DischargeAt: time.Now().UTC().Format(time.RFC3339),
+						Reason:      []string{"recovered", "transferred", "self-discharge"}[rand.Intn(3)],
+					})
+				if err != nil {
+					continue
+				}
+				if err := messaging.Publish(pub, events.TopicPatientDischarged, evt); err != nil {
+					logger.Error("builtin-sim publish discharge", "error", err)
+				}
+
+			case r < 0.90:
+				// Patient transfer
+				from := wards[rand.Intn(len(wards))]
+				to := wards[rand.Intn(len(wards))]
+				if from == to && len(wards) > 1 {
+					to = wards[(rand.Intn(len(wards)-1)+1+func() int {
+						for i, w := range wards {
+							if w == from {
+								return i
+							}
+						}
+						return 0
+					}())%len(wards)]
+				}
+				evt, err := events.New(events.TopicPatientTransferred, "gateway-sim", correlationID,
+					events.PatientTransferPayload{
+						PatientID: pid,
+						FirstName: first,
+						LastName:  last,
+						FromWard:  from,
+						ToWard:    to,
+						Reason:    "clinical decision",
+					})
+				if err != nil {
+					continue
+				}
+				if err := messaging.Publish(pub, events.TopicPatientTransferred, evt); err != nil {
+					logger.Error("builtin-sim publish transfer", "error", err)
+				}
+
+			case r < 0.95:
+				// Lab result
+				lt := labTests[rand.Intn(len(labTests))]
+				value := lt.lo*0.5 + rand.Float64()*lt.scale
+				evt, err := events.New(events.TopicLabResultCreated, "gateway-sim", correlationID,
+					events.LabResultPayload{
+						PatientID:   pid,
+						TestName:    lt.name,
+						Value:       value,
+						Unit:        lt.unit,
+						ReferenceLo: lt.lo,
+						ReferenceHi: lt.hi,
+						Abnormal:    value < lt.lo || value > lt.hi,
+					})
+				if err != nil {
+					continue
+				}
+				if err := messaging.Publish(pub, events.TopicLabResultCreated, evt); err != nil {
+					logger.Error("builtin-sim publish lab", "error", err)
+				}
+
+			default:
+				// Alert
+				sev := alertSeverities[rand.Intn(len(alertSeverities))]
+				evt, err := events.New(events.TopicAlertCreated, "gateway-sim", correlationID,
+					events.AlertPayload{
+						PatientID: pid,
+						Severity:  sev,
+						Category:  alertCategories[rand.Intn(len(alertCategories))],
+						Message:   alertMessages[rand.Intn(len(alertMessages))],
+						Value:     70 + rand.Float64()*60,
+						Threshold: 95,
+					})
+				if err != nil {
+					continue
+				}
+				if err := messaging.Publish(pub, events.TopicAlertCreated, evt); err != nil {
+					logger.Error("builtin-sim publish alert", "error", err)
+				}
 			}
 		}
 	}
