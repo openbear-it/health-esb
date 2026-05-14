@@ -22,10 +22,10 @@ type HandlerFactory func(name string) (message.HandlerFunc, bool)
 
 // RouterBuilderConfig holds the wiring for RouterBuilder.
 type RouterBuilderConfig struct {
-	Logger            watermill.LoggerAdapter
-	SubscriberFactory SubscriberFactory
-	PublisherFactory  PublisherFactory
-	HandlerFactory    HandlerFactory
+	Logger              watermill.LoggerAdapter
+	SubscriberFactory   SubscriberFactory
+	PublisherFactory    PublisherFactory
+	HandlerFactory      HandlerFactory
 	TransformerRegistry *transformer.Registry
 }
 

@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/ThreeDotsLabs/watermill v1.5.1
-	github.com/fsnotify/fsnotify v1.9.0 // indirect
+	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/openbear-it/health-esb v0.0.0
 	github.com/prometheus/client_golang v1.23.2
 )

@@ -90,7 +90,7 @@ func sendAdmission(pub message.Publisher, logger *slog.Logger) error {
 		"correlation_id", correlationID,
 		"patient_id", patientID,
 	)
-	
+
 	return nil
 }
 

@@ -50,7 +50,9 @@ func TestRegistry_MustGet_Panics(t *testing.T) {
 }
 
 func TestRegistry_OverwriteTransformer(t *testing.T) {
-	type stubTransformer struct{ transformer.PassthroughTransformer }
+	type stubTransformer struct {
+		transformer.PassthroughTransformer
+	}
 
 	r := transformer.NewRegistry()
 	r.Register(transformer.PassthroughTransformer{}) // register same name again

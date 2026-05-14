@@ -66,11 +66,11 @@ func (c *Config) defaults() {
 
 // circuitBreaker is the concrete Breaker implementation.
 type circuitBreaker struct {
-	mu           sync.Mutex
-	cfg          Config
-	state        State
-	failures     int
-	openedAt     time.Time
+	mu            sync.Mutex
+	cfg           Config
+	state         State
+	failures      int
+	openedAt      time.Time
 	probeInFlight bool // true when a HalfOpen probe is running
 }
 

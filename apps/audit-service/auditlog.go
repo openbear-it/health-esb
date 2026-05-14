@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	defaultAuditLogPath  = "/var/log/health-esb/audit.jsonl"
+	defaultAuditLogPath   = "/var/log/health-esb/audit.jsonl"
 	auditLogRetentionDays = 30
 )
 

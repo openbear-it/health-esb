@@ -215,5 +215,5 @@ type mockStore struct {
 	seen map[string]bool
 }
 
-func (m *mockStore) Has(id string) bool        { return m.seen[id] }
+func (m *mockStore) Has(id string) bool             { return m.seen[id] }
 func (m *mockStore) Add(id string, _ time.Duration) { m.seen[id] = true }

@@ -191,9 +191,9 @@ func TestValidateAll_Valid(t *testing.T) {
 
 func TestRouteConfig_Validate_Errors(t *testing.T) {
 	tests := []struct {
-		name        string
-		route       config.RouteConfig
-		wantMsgs    []string // substrings expected in combined error message
+		name     string
+		route    config.RouteConfig
+		wantMsgs []string // substrings expected in combined error message
 	}{
 		{
 			name:     "empty name",

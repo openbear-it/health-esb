@@ -18,7 +18,7 @@ type Transformer interface {
 // Registry holds a set of named Transformers.
 // All methods are safe for concurrent use.
 type Registry struct {
-	mu   sync.RWMutex
+	mu     sync.RWMutex
 	byName map[string]Transformer
 }
 
