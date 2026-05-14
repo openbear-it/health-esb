@@ -48,9 +48,7 @@ func main() {
 		return
 	}
 
-	messaging.AddPoisonQueue(router, pub, events.TopicFHIRDocumentCreated)
-
-	router.AddHandler(
+	h := router.AddHandler(
 		"fhir-handle-lab-result",
 		events.TopicLabResultCreated,
 		sub,
@@ -58,6 +56,7 @@ func main() {
 		pub,
 		handleLabResult(metrics, logger),
 	)
+	messaging.AddPoisonQueue(h, pub, events.TopicFHIRDocumentCreated)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

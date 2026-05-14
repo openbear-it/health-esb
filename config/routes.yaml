@@ -1,0 +1,100 @@
+routes:
+- name: patient-admit
+  input_topic: command-patient-admit
+  output_topic: patient-admitted
+  handler: adt_admit
+  transformer: ""
+  enabled: true
+  retry_policy:
+    max_retries: 5
+    initial_interval: 1s
+    multiplier: 2.0
+
+- name: lab-result-generate
+  input_topic: patient-admitted
+  output_topic: lab-result-created
+  handler: lab_generate_result
+  transformer: ""
+  enabled: true
+  retry_policy:
+    max_retries: 5
+    initial_interval: 1s
+    multiplier: 2.0
+
+- name: fhir-observation-create
+  input_topic: lab-result-created
+  output_topic: fhir-document-created
+  handler: fhir_create_observation
+  transformer: hl7_to_fhir
+  enabled: true
+  retry_policy:
+    max_retries: 3
+    initial_interval: 2s
+    multiplier: 1.5
+
+- name: notify-admitted
+  input_topic: patient-admitted
+  output_topic: notification-sent
+  handler: notify_admitted
+  transformer: ""
+  enabled: true
+  retry_policy:
+    max_retries: 3
+    initial_interval: 1s
+    multiplier: 2.0
+
+- name: notify-lab-result
+  input_topic: lab-result-created
+  output_topic: notification-sent
+  handler: notify_lab_result
+  transformer: ""
+  enabled: true
+  retry_policy:
+    max_retries: 3
+    initial_interval: 1s
+    multiplier: 2.0
+
+- name: notify-discharged
+  input_topic: patient-discharged
+  output_topic: notification-sent
+  handler: notify_discharged
+  transformer: ""
+  enabled: true
+  retry_policy:
+    max_retries: 3
+    initial_interval: 1s
+    multiplier: 2.0
+
+- name: notify-transferred
+  input_topic: patient-transferred
+  output_topic: notification-sent
+  handler: notify_transferred
+  transformer: ""
+  enabled: true
+  retry_policy:
+    max_retries: 3
+    initial_interval: 1s
+    multiplier: 2.0
+
+- name: notify-alert
+  input_topic: alert-created
+  output_topic: notification-sent
+  handler: notify_alert
+  transformer: ""
+  enabled: true
+  retry_policy:
+    max_retries: 3
+    initial_interval: 1s
+    multiplier: 2.0
+
+# Example disabled route: FHIR normalization pipeline (not yet implemented)
+- name: fhir-normalize
+  input_topic: fhir-document-created
+  output_topic: fhir-document-created
+  handler: fhir_normalize
+  transformer: fhir_normalize
+  enabled: false
+  retry_policy:
+    max_retries: 3
+    initial_interval: 1s
+    multiplier: 2.0

@@ -12,6 +12,8 @@ type Config struct {
 	AMQPUrl      string
 	LogLevel     string
 	OTLPEndpoint string
+	DLQUser      string
+	DLQPassword  string
 }
 
 // Load reads configuration from environment variables, applying defaults.
@@ -22,6 +24,8 @@ func Load(serviceName string) Config {
 		AMQPUrl:      getEnv("AMQP_URL", "amqp://guest:guest@localhost:5672/"),
 		LogLevel:     getEnv("LOG_LEVEL", "info"),
 		OTLPEndpoint: getEnv("OTLP_ENDPOINT", "http://localhost:4318"),
+		DLQUser:      getEnv("DLQ_USER", "admin"),
+		DLQPassword:  getEnv("DLQ_PASSWORD", ""),
 	}
 }
 

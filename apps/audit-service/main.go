@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -23,7 +21,7 @@ import (
 
 const serviceName = "audit-service"
 
-// AuditRecord stores a persisted audit log entry (in-memory for demo).
+// AuditRecord stores a persisted audit log entry.
 type AuditRecord struct {
 	EventID       string    `json:"event_id"`
 	EventType     string    `json:"event_type"`
@@ -33,11 +31,6 @@ type AuditRecord struct {
 	ReceivedAt    time.Time `json:"received_at"`
 }
 
-var (
-	auditLog []AuditRecord
-	auditMu  sync.RWMutex
-)
-
 func main() {
 	cfg := config.Load(serviceName)
 	logger := observability.NewLogger(cfg.ServiceName, cfg.LogLevel)
@@ -45,6 +38,13 @@ func main() {
 
 	wmLogger := watermill.NewSlogLogger(logger)
 	metrics := observability.NewMetrics("audit_service")
+
+	al, err := NewAuditLogger(auditLogPath())
+	if err != nil {
+		logger.Error("open audit log", "error", err)
+		return
+	}
+	defer al.Close()
 
 	pub, err := messaging.NewPublisher(cfg.AMQPUrl, wmLogger)
 	if err != nil {
@@ -83,7 +83,7 @@ func main() {
 		go func(t string, ch <-chan *message.Message) {
 			defer wg.Done()
 			for msg := range ch {
-				handleAudit(msg, t, metrics, logger)
+				handleAudit(msg, t, al, metrics, logger)
 			}
 		}(topic, msgs)
 	}
@@ -91,10 +91,11 @@ func main() {
 	// Expose HTTP endpoints for audit log + metrics
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
-	mux.HandleFunc("/audit", handleAuditHTTP)
+	mux.Handle("/audit", al)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, `{"status":"ok"}`)
 	})
+	mux.HandleFunc("/dlq/requeue", dlqRequeueHandler(cfg.AMQPUrl, cfg.DLQUser, cfg.DLQPassword, wmLogger, logger))
 
 	srv := &http.Server{Addr: fmt.Sprintf(":%d", cfg.Port), Handler: mux}
 	go func() {
@@ -107,16 +108,9 @@ func main() {
 	defer cancel()
 	_ = srv.Shutdown(shutCtx)
 	wg.Wait()
-
-	// Write audit log to stdout on exit
-	if len(auditLog) > 0 {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(auditLog)
-	}
 }
 
-func handleAudit(msg *message.Message, topic string, m *observability.Metrics, logger *slog.Logger) {
+func handleAudit(msg *message.Message, topic string, al *AuditLogger, m *observability.Metrics, logger *slog.Logger) {
 	start := time.Now()
 	evt, err := messaging.DecodeEvent(msg)
 	if err != nil {
@@ -134,9 +128,9 @@ func handleAudit(msg *message.Message, topic string, m *observability.Metrics, l
 		ReceivedAt:    time.Now().UTC(),
 	}
 
-	auditMu.Lock()
-	auditLog = append(auditLog, rec)
-	auditMu.Unlock()
+	if err := al.Write(rec); err != nil {
+		logger.Warn("audit write failed", "error", err)
+	}
 
 	m.MessagesProcessedTotal.WithLabelValues(topic).Inc()
 	m.ProcessingDuration.WithLabelValues(topic).Observe(time.Since(start).Seconds())
@@ -148,14 +142,4 @@ func handleAudit(msg *message.Message, topic string, m *observability.Metrics, l
 	)
 
 	msg.Ack()
-}
-
-func handleAuditHTTP(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	auditMu.RLock()
-	defer auditMu.RUnlock()
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(auditLog)
-	
 }

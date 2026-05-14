@@ -16,6 +16,8 @@ export default defineConfig({
       '/chaos':       'http://localhost:8080',
       '/health':      'http://localhost:8080',
       '/metrics':     'http://localhost:8080',
+      '/audit':       'http://localhost:8081',
+      '/dlq':         'http://localhost:8081',
     }
   }
 })

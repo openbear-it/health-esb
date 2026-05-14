@@ -32,6 +32,7 @@ func NewRouter(cfg RouterConfig) (*message.Router, error) {
 	router.AddMiddleware(
 		middleware.CorrelationID,
 		middleware.Recoverer,
+		IdempotencyMiddleware(IdempotencyConfig{Logger: logger}),
 		RetryMiddleware(logger),
 	)
 
@@ -76,11 +77,12 @@ func NewSubscriber(amqpURL, consumerGroup string, logger watermill.LoggerAdapter
 	return sub, nil
 }
 
-// AddPoisonQueue adds a dead-letter queue handler to the router for a given topic.
-func AddPoisonQueue(router *message.Router, pub message.Publisher, topic string) {
+// AddPoisonQueue attaches a dead-letter queue middleware to a specific handler.
+// Each handler routes its failed messages to <topic>-dlq, keeping DLQs isolated.
+func AddPoisonQueue(handler *message.Handler, pub message.Publisher, topic string) {
 	pq, err := middleware.PoisonQueue(pub, topic+"-dlq")
 	if err != nil {
 		return
 	}
-	router.AddMiddleware(pq)
+	handler.AddMiddleware(pq)
 }

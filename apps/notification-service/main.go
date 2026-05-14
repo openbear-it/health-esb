@@ -15,6 +15,7 @@ import (
 	"github.com/openbear-it/health-esb/internal/events"
 	"github.com/openbear-it/health-esb/internal/messaging"
 	"github.com/openbear-it/health-esb/internal/observability"
+	"github.com/openbear-it/health-esb/internal/resilience"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -27,6 +28,14 @@ func main() {
 
 	wmLogger := watermill.NewSlogLogger(logger)
 	metrics := observability.NewMetrics("notification_service")
+
+	// Circuit breaker for outbound notification sends (email/SMS adapter).
+	breaker := resilience.NewBreaker(resilience.Config{
+		Target:       "notification-outbound",
+		Threshold:    5,
+		ResetTimeout: 30 * time.Second,
+		Gauge:        metrics.CircuitBreakerState,
+	})
 
 	pub, err := messaging.NewPublisher(cfg.AMQPUrl, wmLogger)
 	if err != nil {
@@ -67,52 +76,21 @@ func main() {
 		return
 	}
 
-	messaging.AddPoisonQueue(router, pub, events.TopicNotificationSent)
-
-	router.AddHandler(
-		"notify-admitted",
-		events.TopicPatientAdmitted,
-		subAdmit,
-		events.TopicNotificationSent,
-		pub,
-		handleAdmitNotification(metrics, logger),
-	)
-
-	router.AddHandler(
-		"notify-lab-result",
-		events.TopicLabResultCreated,
-		subLab,
-		events.TopicNotificationSent,
-		pub,
-		handleLabNotification(metrics, logger),
-	)
-
-	router.AddHandler(
-		"notify-discharged",
-		events.TopicPatientDischarged,
-		subDischarge,
-		events.TopicNotificationSent,
-		pub,
-		handleDischargeNotification(metrics, logger),
-	)
-
-	router.AddHandler(
-		"notify-transferred",
-		events.TopicPatientTransferred,
-		subTransfer,
-		events.TopicNotificationSent,
-		pub,
-		handleTransferNotification(metrics, logger),
-	)
-
-	router.AddHandler(
-		"notify-alert",
-		events.TopicAlertCreated,
-		subAlert,
-		events.TopicNotificationSent,
-		pub,
-		handleAlertNotification(metrics, logger),
-	)
+	for _, hSpec := range []struct {
+		name string
+		sub  message.Subscriber
+		in   string
+		fn   message.HandlerFunc
+	}{
+		{"notify-admitted", subAdmit, events.TopicPatientAdmitted, handleAdmitNotification(metrics, breaker, logger)},
+		{"notify-lab-result", subLab, events.TopicLabResultCreated, handleLabNotification(metrics, breaker, logger)},
+		{"notify-discharged", subDischarge, events.TopicPatientDischarged, handleDischargeNotification(metrics, breaker, logger)},
+		{"notify-transferred", subTransfer, events.TopicPatientTransferred, handleTransferNotification(metrics, breaker, logger)},
+		{"notify-alert", subAlert, events.TopicAlertCreated, handleAlertNotification(metrics, breaker, logger)},
+	} {
+		h := router.AddHandler(hSpec.name, hSpec.in, hSpec.sub, events.TopicNotificationSent, pub, hSpec.fn)
+		messaging.AddPoisonQueue(h, pub, events.TopicNotificationSent)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -135,7 +113,7 @@ func main() {
 	}
 }
 
-func handleAdmitNotification(m *observability.Metrics, logger *slog.Logger) message.HandlerFunc {
+func handleAdmitNotification(m *observability.Metrics, cb resilience.Breaker, logger *slog.Logger) message.HandlerFunc {
 	return func(msg *message.Message) ([]*message.Message, error) {
 		start := time.Now()
 		topic := events.TopicNotificationSent
@@ -158,11 +136,11 @@ func handleAdmitNotification(m *observability.Metrics, logger *slog.Logger) mess
 			Message:   fmt.Sprintf("Patient %s %s has been admitted to ward %s.", payload.FirstName, payload.LastName, payload.Ward),
 		}
 
-		return publishNotification(topic, serviceName, inEvt.CorrelationID, notification, m, logger, start)
+		return publishNotification(msg.Context(), topic, serviceName, inEvt.CorrelationID, notification, m, cb, logger, start)
 	}
 }
 
-func handleLabNotification(m *observability.Metrics, logger *slog.Logger) message.HandlerFunc {
+func handleLabNotification(m *observability.Metrics, cb resilience.Breaker, logger *slog.Logger) message.HandlerFunc {
 	return func(msg *message.Message) ([]*message.Message, error) {
 		start := time.Now()
 		topic := events.TopicNotificationSent
@@ -189,11 +167,11 @@ func handleLabNotification(m *observability.Metrics, logger *slog.Logger) messag
 			Message:   fmt.Sprintf("ALERT: Abnormal lab result for patient %s — %s: %.2f %s", lab.PatientID, lab.TestName, lab.Value, lab.Unit),
 		}
 
-		return publishNotification(topic, serviceName, inEvt.CorrelationID, notification, m, logger, start)
+		return publishNotification(msg.Context(), topic, serviceName, inEvt.CorrelationID, notification, m, cb, logger, start)
 	}
 }
 
-func handleDischargeNotification(m *observability.Metrics, logger *slog.Logger) message.HandlerFunc {
+func handleDischargeNotification(m *observability.Metrics, cb resilience.Breaker, logger *slog.Logger) message.HandlerFunc {
 	return func(msg *message.Message) ([]*message.Message, error) {
 		start := time.Now()
 		topic := events.TopicNotificationSent
@@ -216,11 +194,11 @@ func handleDischargeNotification(m *observability.Metrics, logger *slog.Logger) 
 			Message:   fmt.Sprintf("Patient %s %s has been discharged from ward %s. Reason: %s.", payload.FirstName, payload.LastName, payload.Ward, payload.Reason),
 		}
 
-		return publishNotification(topic, serviceName, inEvt.CorrelationID, notification, m, logger, start)
+		return publishNotification(msg.Context(), topic, serviceName, inEvt.CorrelationID, notification, m, cb, logger, start)
 	}
 }
 
-func handleTransferNotification(m *observability.Metrics, logger *slog.Logger) message.HandlerFunc {
+func handleTransferNotification(m *observability.Metrics, cb resilience.Breaker, logger *slog.Logger) message.HandlerFunc {
 	return func(msg *message.Message) ([]*message.Message, error) {
 		start := time.Now()
 		topic := events.TopicNotificationSent
@@ -243,11 +221,11 @@ func handleTransferNotification(m *observability.Metrics, logger *slog.Logger) m
 			Message:   fmt.Sprintf("Patient %s %s transferred from %s to %s. Reason: %s.", payload.FirstName, payload.LastName, payload.FromWard, payload.ToWard, payload.Reason),
 		}
 
-		return publishNotification(topic, serviceName, inEvt.CorrelationID, notification, m, logger, start)
+		return publishNotification(msg.Context(), topic, serviceName, inEvt.CorrelationID, notification, m, cb, logger, start)
 	}
 }
 
-func handleAlertNotification(m *observability.Metrics, logger *slog.Logger) message.HandlerFunc {
+func handleAlertNotification(m *observability.Metrics, cb resilience.Breaker, logger *slog.Logger) message.HandlerFunc {
 	return func(msg *message.Message) ([]*message.Message, error) {
 		start := time.Now()
 		topic := events.TopicNotificationSent
@@ -275,18 +253,22 @@ func handleAlertNotification(m *observability.Metrics, logger *slog.Logger) mess
 			Message:   fmt.Sprintf("[%s] Alert for patient %s: %s", payload.Severity, payload.PatientID, payload.Message),
 		}
 
-		return publishNotification(topic, serviceName, inEvt.CorrelationID, notification, m, logger, start)
+		return publishNotification(msg.Context(), topic, serviceName, inEvt.CorrelationID, notification, m, cb, logger, start)
 	}
 }
 
-func publishNotification(topic, source, correlationID string, n events.NotificationPayload, m *observability.Metrics, logger *slog.Logger, start time.Time) ([]*message.Message, error) {
-	outEvt, err := events.New(topic, source, correlationID, n)
+func publishNotification(ctx context.Context, topic, source, correlationID string, n events.NotificationPayload, m *observability.Metrics, cb resilience.Breaker, logger *slog.Logger, start time.Time) ([]*message.Message, error) {
+	var outMsg *message.Message
+	err := cb.Call(ctx, func() error {
+		outEvt, err := events.New(topic, source, correlationID, n)
+		if err != nil {
+			return err
+		}
+		outMsg, err = messaging.ToMessage(outEvt)
+		return err
+	})
 	if err != nil {
-		return nil, err
-	}
-
-	outMsg, err := messaging.ToMessage(outEvt)
-	if err != nil {
+		m.MessagesFailedTotal.WithLabelValues(topic).Inc()
 		return nil, err
 	}
 

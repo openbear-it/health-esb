@@ -116,8 +116,9 @@ Every service calls `messaging.NewRouter()` which builds a Watermill router prec
 ```
 CorrelationID  →  ensures the same correlationID flows through the whole chain
 Recoverer      →  catches panics, nacks the message (triggers retry)
+Idempotency    →  deduplicates by envelope ID (10 min TTL, pluggable store)
 Retry          →  5 attempts with exponential backoff (1s → 2s → 4s → 8s → 16s)
-PoisonQueue    →  after 5 failures routes to <topic>-dlq
+PoisonQueue    →  after 5 failures routes to <topic>-dlq (per-handler)
 ```
 
 ```go
@@ -126,6 +127,7 @@ router, _ := message.NewRouter(message.RouterConfig{}, wmLogger)
 router.AddMiddleware(
     middleware.CorrelationID,
     middleware.Recoverer,
+    messaging.IdempotencyMiddleware(cfg),   // dedup by envelope ID
     middleware.Retry{
         MaxRetries:      5,
         InitialInterval: time.Second,
@@ -133,8 +135,9 @@ router.AddMiddleware(
         Logger:          wmLogger,
     }.Middleware,
 )
+// PoisonQueue registered per-handler:
 poisonMiddleware, _ := middleware.PoisonQueue(publisher, topic+"-dlq")
-router.AddMiddleware(poisonMiddleware)
+handler.AddMiddleware(poisonMiddleware)
 ```
 
 ### Handler definition
@@ -161,7 +164,7 @@ router.AddHandler(
 | `lab-service` | — | Simulates a laboratory. For each admitted patient generates one event per test (HbA1c, WBC, Platelets, Glucose, Creatinine) with random values. Flags abnormal results. |
 | `fhir-bridge` | — | Healthcare interoperability. Converts lab results to FHIR R4 Observation JSON and publishes them. |
 | `notification-service` | — | Sends simulated email (admission) and SMS (abnormal results). |
-| `audit-service` | 8081 | Subscribes to every topic. Keeps an in-memory audit log queryable at `GET /audit`. |
+| `audit-service` | 8081 | Subscribes to every topic. Writes audit records as newline-delimited JSON to `$AUDIT_LOG_PATH` (default `/var/log/health-esb/audit.jsonl`). Daily file rotation, 30-day retention. Query API: `GET /audit?from=<RFC3339>&to=<RFC3339>&type=<event_type>`. DLQ requeue: `POST /dlq/requeue`. |
 | `simulator` | — | Standalone traffic generator. Generates a synthetic `POST /admissions` every 2 seconds. Alternative to the gateway built-in simulator. |
 | `dashboard` | 80 | React + Vite + Recharts. Full interactive control panel: live stream, charts, simulator control, chaos engineering, manual event injection. |
 
@@ -199,6 +202,18 @@ Inject faults into any downstream service from the dashboard:
 
 Services with active chaos show an ⚡ icon in the pipeline view.
 
+### Middleware chain bar
+
+Displayed below the KPI grid: shows the live middleware stack (`CorrelationID → Recoverer → Idempotency → Retry → PoisonQueue`) and active feature badges (Envelope v1.0, OTel Tracing, Circuit Breaker).
+
+### DLQ Requeue panel
+
+Select a DLQ topic and limit, enter Basic Auth credentials, and click **Requeue** to push messages back to the original topic via `POST /dlq/requeue` on the audit-service.
+
+### Audit Query panel
+
+Filter audit records by time range (`from`/`to` datetime pickers) and event type, then click **Query** to stream matching NDJSON records from the audit log via `GET /audit`.
+
 ### Manual event injection
 Send any event type directly from the dashboard:
 
@@ -226,10 +241,12 @@ health-esb/
 │   ├── simulator/             Standalone traffic generator
 │   └── dashboard/             React live dashboard (full control panel)
 ├── internal/
-│   ├── events/                Canonical Event type, all topic constants, all payloads
-│   ├── messaging/             Watermill router factory + pub/sub helpers
-│   ├── config/                Env-based config (PORT, AMQP_URL, LOG_LEVEL …)
+│   ├── events/                Canonical MessageEnvelope, all topic constants, all payloads
+│   ├── messaging/             Watermill router factory + middleware chain + RouterBuilder
+│   ├── config/                Env config · YAML route config · fsnotify hot-reload watcher
 │   ├── observability/         slog logger, Prometheus metrics, OTel tracing
+│   ├── resilience/            Circuit breaker (Closed/Open/HalfOpen)
+│   ├── transformer/           Transformer interface · Registry · FhirObservationTransformer
 │   ├── fhir/                  FHIR Observation builder
 │   └── hl7/                   Minimal HL7 v2 segment parser
 ├── deployments/
@@ -346,6 +363,27 @@ curl -X DELETE http://localhost:8080/chaos
 Available services: `adt-service`, `lab-service`, `fhir-bridge`, `notification-service`, `audit-service`  
 Available modes: `poison` (→ DLQ), `drop` (silent discard), `""` (off)
 
+### Audit log
+
+```bash
+# Stream all records from the current audit.jsonl
+curl http://localhost:8081/audit
+
+# Filter by time range and event type
+curl "http://localhost:8081/audit?from=2025-01-01T00:00:00Z&to=2025-12-31T23:59:59Z&type=lab-result-created"
+```
+
+### DLQ requeue
+
+```bash
+curl -X POST http://localhost:8081/dlq/requeue \
+  -u admin: \
+  -H 'Content-Type: application/json' \
+  -d '{"topic":"lab-result-created-dlq","limit":10}'
+```
+
+Available DLQ topics follow the pattern `<original-topic>-dlq`.
+
 ---
 
 ## Kubernetes deployment
@@ -392,6 +430,10 @@ kubectl scale deployment lab-service -n health-esb --replicas=5
 | `AMQP_URL` | `amqp://guest:guest@localhost:5672/` | RabbitMQ endpoint |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `OTLP_ENDPOINT` | `http://localhost:4318` | OpenTelemetry collector (OTLP HTTP) |
+| `ROUTES_CONFIG_PATH` | `config/routes.yaml` | YAML route configuration file |
+| `AUDIT_LOG_PATH` | `/var/log/health-esb/audit.jsonl` | Audit NDJSON log file path (audit-service) |
+| `DLQ_USER` | `admin` | Basic auth username for `POST /dlq/requeue` |
+| `DLQ_PASSWORD` | `""` | Basic auth password for `POST /dlq/requeue` |
 
 ---
 
@@ -406,9 +448,14 @@ Each service registers:
 - `healthesb_<svc>_retry_total`
 - `healthesb_<svc>_dlq_total`
 
+Global metrics (no `<svc>` prefix):
+- `healthesb_message_e2e_duration_seconds` — end-to-end duration from envelope timestamp to handler completion (labels: `source_service`, `dest_service`, `topic`)
+- `healthesb_queue_depth_total` — current RabbitMQ queue depth polled every 15 s (label: `queue_name`)
+- `healthesb_circuit_breaker_state` — 1 when the CB is in that state (labels: `target`, `state`)
+
 ### Distributed tracing
 
-Set `OTLP_ENDPOINT` to any OpenTelemetry-compatible collector (Jaeger, Tempo, etc.). The `correlationID` in every event maps directly to the trace context.
+Set `OTLP_ENDPOINT` to any OpenTelemetry-compatible collector (Jaeger, Tempo, etc.). The W3C `traceparent` is injected into every `MessageEnvelope.Headers` at publish time and reconstructed by `messaging.TracingMiddleware` on the consume side. Each handler produces a child span named `<service>/<topic>/handle`.
 
 ---
 
@@ -423,6 +470,18 @@ patient-admitted     →  (after 5 retries)  →  patient-admitted-dlq
 
 Trigger this from the dashboard with the **Chaos → Poison** button.  
 The DLQ counter in the stats row increments in real time.
+
+### Requeue API
+
+```bash
+# Push messages from a DLQ back to the original topic
+curl -X POST http://localhost:8081/dlq/requeue \
+  -u admin: \
+  -H 'Content-Type: application/json' \
+  -d '{"topic":"lab-result-created-dlq","limit":10}'
+```
+
+Or use the **DLQ Requeue** panel in the dashboard.
 
 ---
 

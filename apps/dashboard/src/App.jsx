@@ -509,6 +509,158 @@ function ChaosPanel() {
   )
 }
 
+// ─── DLQ Requeue ─────────────────────────────────────────────────────────────
+const DLQ_TOPICS = [
+  'command-patient-admit-dlq',
+  'patient-admitted-dlq',
+  'patient-discharged-dlq',
+  'patient-transferred-dlq',
+  'lab-result-created-dlq',
+  'fhir-document-created-dlq',
+  'notification-sent-dlq',
+  'alert-created-dlq',
+]
+
+function DlqRequeuePanel() {
+  const [topic,  setTopic]  = useState(DLQ_TOPICS[2])
+  const [limit,  setLimit]  = useState(10)
+  const [user,   setUser]   = useState('admin')
+  const [pass,   setPass]   = useState('')
+  const [busy,   setBusy]   = useState(false)
+  const [result, setResult] = useState(null)
+
+  const requeue = async () => {
+    setBusy(true); setResult(null)
+    try {
+      const creds = btoa(user + ':' + pass)
+      const r = await fetch('/dlq/requeue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + creds },
+        body: JSON.stringify({ topic, limit: Number(limit) }),
+      })
+      const d = await r.json()
+      setResult({ ok: r.ok, msg: r.ok ? `Requeued ${d.requeued ?? '?'} message(s)` : (d.error || 'Error') })
+    } catch (e) {
+      setResult({ ok: false, msg: 'Error: ' + e.message })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Box title="DLQ Requeue — push messages back to the original topic">
+      <Row>{[
+        <Sel value={topic} onChange={setTopic} options={DLQ_TOPICS} />,
+        <NIn value={limit} onChange={setLimit} placeholder="Limit (max 100)" />,
+      ]}</Row>
+      <Row>{[
+        <TIn value={user} onChange={setUser} placeholder="Basic auth user" />,
+        <TIn value={pass} onChange={setPass} placeholder="Basic auth password" />,
+      ]}</Row>
+      <div style={{ display:'flex', alignItems:'center', gap:10, marginTop:4 }}>
+        <Btn col="#f87171" onClick={requeue} disabled={busy}>
+          {busy ? 'Requeuing…' : 'Requeue ▶'}
+        </Btn>
+        {result && (
+          <span style={{ fontSize:11, color: result.ok ? '#34d399' : '#f87171' }}>{result.msg}</span>
+        )}
+      </div>
+    </Box>
+  )
+}
+
+// ─── Audit Query ──────────────────────────────────────────────────────────────
+const AUDIT_TYPES = [
+  'command-patient-admit', 'patient-admitted', 'patient-discharged',
+  'patient-transferred', 'lab-result-created', 'fhir-document-created',
+  'notification-sent', 'alert-created',
+]
+
+function AuditQueryPanel() {
+  const [from,    setFrom]    = useState('')
+  const [to,      setTo]      = useState('')
+  const [evtType, setEvtType] = useState('')
+  const [rows,    setRows]    = useState(null)
+  const [busy,    setBusy]    = useState(false)
+  const [err,     setErr]     = useState(null)
+
+  const query = async () => {
+    setBusy(true); setErr(null); setRows(null)
+    const params = new URLSearchParams()
+    if (from) params.set('from', new Date(from).toISOString())
+    if (to)   params.set('to',   new Date(to).toISOString())
+    if (evtType) params.set('type', evtType)
+    try {
+      const r = await fetch('/audit?' + params.toString())
+      if (!r.ok) { setErr('HTTP ' + r.status); setBusy(false); return }
+      if (r.status === 204) { setRows([]); setBusy(false); return }
+      const text = await r.text()
+      const parsed = text.trim().split('\n').filter(Boolean).map(l => {
+        try { return JSON.parse(l) } catch (_) { return null }
+      }).filter(Boolean)
+      setRows(parsed)
+    } catch (e) {
+      setErr(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const dtStyle = {
+    background: P.input, border: '1px solid ' + P.border, color: P.th,
+    borderRadius: 6, padding: '8px 11px', fontSize: 12, width: '100%',
+    outline: 'none', colorScheme: 'dark',
+  }
+
+  return (
+    <Box title="Audit Log Query — stream matching records from audit.jsonl">
+      <div style={{ display:'flex', gap:8, marginBottom:8, flexWrap:'wrap' }}>
+        <div style={{ flex:'1 1 160px' }}>
+          <div style={{ fontSize:9, color:P.tm, marginBottom:4 }}>FROM (local time)</div>
+          <input type="datetime-local" value={from} onChange={e => setFrom(e.target.value)} style={dtStyle} />
+        </div>
+        <div style={{ flex:'1 1 160px' }}>
+          <div style={{ fontSize:9, color:P.tm, marginBottom:4 }}>TO (local time)</div>
+          <input type="datetime-local" value={to} onChange={e => setTo(e.target.value)} style={dtStyle} />
+        </div>
+        <div style={{ flex:'1 1 180px' }}>
+          <div style={{ fontSize:9, color:P.tm, marginBottom:4 }}>TYPE (optional)</div>
+          <Sel
+            value={evtType}
+            onChange={setEvtType}
+            options={[{ value:'', label:'All event types' }, ...AUDIT_TYPES.map(t => ({ value:t, label:t }))]}
+          />
+        </div>
+      </div>
+      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
+        <Btn col="#a78bfa" onClick={query} disabled={busy}>
+          {busy ? 'Querying…' : 'Query ▶'}
+        </Btn>
+        {err && <span style={{ fontSize:11, color:'#f87171' }}>Error: {err}</span>}
+        {rows && <span style={{ fontSize:11, color:P.tm }}>{rows.length} record{rows.length !== 1 ? 's' : ''} found</span>}
+      </div>
+      {rows && rows.length > 0 && (
+        <div style={{ overflowY:'auto', maxHeight:260, fontFamily:'monospace' }}>
+          {rows.map((r, i) => (
+            <div key={i} style={{
+              display:'flex', gap:8, padding:'5px 6px', borderBottom:'1px solid ' + P.sep,
+              fontSize:10, alignItems:'flex-start', flexWrap:'wrap',
+            }}>
+              <span style={{ color:P.td, flexShrink:0, minWidth:58 }}>{new Date(r.timestamp).toLocaleTimeString()}</span>
+              <Tag col={TC[r.event_type] || P.tm}>{r.event_type}</Tag>
+              <span style={{ color:P.tb, fontFamily:'monospace', fontSize:9 }}>{(r.correlation_id||'').slice(0,8)}</span>
+              <span style={{ color:P.tm, fontSize:9 }}>{r.source}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {rows && rows.length === 0 && (
+        <div style={{ color:P.tm, fontSize:11, padding:'12px 0' }}>No records match the filter.</div>
+      )}
+    </Box>
+  )
+}
+
 // ─── Injector ─────────────────────────────────────────────────────────────────
 function Injector({ onResult }) {
   const [tab, setTab] = useState('admission')
@@ -712,6 +864,22 @@ export default function App() {
           <Kpi label="Evt/s"      value={curTph}                               col="#fbbf24" />
         </div>
 
+        {/* Middleware chain info bar */}
+        <div style={{ background:P.panel, border:'1px solid '+P.border, borderRadius:8, padding:'8px 16px', marginBottom:16, display:'flex', alignItems:'center', gap:6, flexWrap:'wrap', fontSize:9, color:P.tm }}>
+          <span style={{ color:P.td, fontWeight:700, textTransform:'uppercase', letterSpacing:1, marginRight:4 }}>Middleware chain</span>
+          {['CorrelationID','Recoverer','Idempotency','Retry','PoisonQueue'].map((m, i, arr) => (
+            <span key={m} style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <span style={{ background:P.card, border:'1px solid '+P.border, borderRadius:4, padding:'2px 8px', color:P.tb, fontFamily:'monospace', fontSize:9 }}>{m}</span>
+              {i < arr.length-1 && <span style={{ color:P.td }}>→</span>}
+            </span>
+          ))}
+          <span style={{ marginLeft:'auto', display:'flex', gap:6, flexWrap:'wrap' }}>
+            <Tag col="#34d399">Envelope v1.0</Tag>
+            <Tag col="#60a5fa">OTel Tracing</Tag>
+            <Tag col="#a78bfa">Circuit Breaker</Tag>
+          </span>
+        </div>
+
         {/* Pipeline */}
         <Box title="Message Pipeline — Watermill fan-out router" style={{ marginBottom:16 }}>
           <Pipeline svcCounts={svcC} gwCount={gwCount} auditCount={auditCount} chaos={chaos} tph={curTph} />
@@ -797,6 +965,12 @@ export default function App() {
 
         {/* Injector */}
         <div style={{ marginBottom:16 }}><Injector onResult={setInjMsg} /></div>
+
+        {/* DLQ Requeue + Audit Query */}
+        <div className="two-col" style={{ marginBottom:16 }}>
+          <DlqRequeuePanel />
+          <AuditQueryPanel />
+        </div>
 
         {/* Inspector */}
         {selected && <Inspector event={selected} onClose={() => setSelected(null)} />}

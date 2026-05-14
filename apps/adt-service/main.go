@@ -47,9 +47,7 @@ func main() {
 		return
 	}
 
-	messaging.AddPoisonQueue(router, pub, events.TopicPatientAdmitted)
-
-	router.AddHandler(
+	h := router.AddHandler(
 		"adt-handle-admit",
 		events.TopicCommandPatientAdmit,
 		sub,
@@ -57,6 +55,7 @@ func main() {
 		pub,
 		handleAdmit(metrics, logger),
 	)
+	messaging.AddPoisonQueue(h, pub, events.TopicPatientAdmitted)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
