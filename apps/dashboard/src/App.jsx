@@ -538,8 +538,14 @@ function DlqRequeuePanel() {
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + creds },
         body: JSON.stringify({ topic, limit: Number(limit) }),
       })
-      const d = await r.json()
-      setResult({ ok: r.ok, msg: r.ok ? `Requeued ${d.requeued ?? '?'} message(s)` : (d.error || 'Error') })
+      const text = await r.text()
+      let d = null
+      try { d = JSON.parse(text) } catch (_) {}
+      if (!r.ok) {
+        setResult({ ok: false, msg: d?.error || text.slice(0, 120) || `HTTP ${r.status}` })
+      } else {
+        setResult({ ok: true, msg: `Requeued ${d?.requeued ?? '?'} message(s)` })
+      }
     } catch (e) {
       setResult({ ok: false, msg: 'Error: ' + e.message })
     } finally {
@@ -827,8 +833,8 @@ export default function App() {
       {/* Header */}
       <div style={{ background:P.panel, borderBottom:'1px solid '+P.border, padding:'12px '+pad, display:'flex', alignItems:'center', gap:12, flexWrap:'wrap', position:'sticky', top:0, zIndex:100 }}>
         <div>
-          <span style={{ fontSize:16, fontWeight:800, color:P.th, letterSpacing:-0.3 }}>Health ESB</span>
-          {w >= 480 && <span style={{ fontSize:10, color:P.tm, marginLeft:8 }}>event-driven architecture demo</span>}
+          <span styledemo={{ fontSize:16, fontWeight:800, color:P.th, letterSpacing:-0.3 }}>Health ESB</span>
+          {w >= 480 && <span style={{ fontSize:10, color:P.tm, marginLeft:8 }}>event-driven architecture </span>}
         </div>
         {w >= 480 && (
           <div style={{ display:'flex', alignItems:'center', gap:5 }}>
